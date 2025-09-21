@@ -9,6 +9,8 @@ description.workspace = true
 
 [dependencies]
 mvlc-core.workspace = true
+mvlc-media.workspace = true
+mvlc-render.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

@@ -45,6 +45,7 @@ cpal = "0.15"
 # Rendering
 ash = "0.37"  # Vulkan bindings
 vk-mem = "0.3"  # Vulkan memory allocator
+ash-window = "0.13"  # Vulkan windowing
 
 # Build dependencies
 bindgen = "0.69"

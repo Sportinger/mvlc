@@ -27,13 +27,13 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## M1 — Baseline Player
 
-* [ ] Audio‑Ausgabe (`cpal`) + Resample
-* [ ] Audio‑Masterclock implementiert
-* [ ] A/V‑Sync (Drop/Repeat Window)
-* [ ] Play/Pause/Seek + Timeline‑Scrub
-* [ ] Canvas: Translate/Scale, Z‑Order
-* [ ] Drag‑&‑Drop (`DroppedFile`)
-* [ ] Badges live verdrahtet (Decode/Color/Transfer/Render/Sync)
+* [x] Audio‑Ausgabe (`cpal`) + Resample
+* [x] Audio‑Masterclock implementiert
+* [x] A/V‑Sync (Drop/Repeat Window)
+* [x] Play/Pause/Seek + Timeline‑Scrub
+* [x] Canvas: Translate/Scale, Z‑Order
+* [x] Drag‑&‑Drop (`DroppedFile`)
+* [x] Badges live verdrahtet (Decode/Color/Transfer/Render/Sync)
 * [ ] Detail‑Panel V1: Codec, Auflösung, Queues
 * [ ] Tests: 1080p/4K H.264, MP4/MKV
 
@@ -41,10 +41,11 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## M2 — HW‑Decode + Zero‑Copy
 
-* [ ] VA‑API Decoder in Pipeline
-* [ ] Negotiation `video/x-raw(memory:DMABuf)`
-* [ ] DMABUF‑Import in Vulkan (External Memory)
-* [ ] Zero‑Copy Pfaderkennung + UI‑Farbcodes
+* [x] Basic Renderer (Placeholder)
+* [x] VA‑API Decoder in Pipeline
+* [x] Negotiation `video/x-raw(memory:DMABuf)`
+* [x] DMABUF‑Import in Vulkan (External Memory)
+* [x] Zero‑Copy Pfaderkennung + UI‑Farbcodes
 * [ ] Metrik: Upload‑Bytes≈0 im Optimum
 * [ ] Fallback: SW‑Decode Pfad stabil
 

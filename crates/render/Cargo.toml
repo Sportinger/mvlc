@@ -17,6 +17,8 @@ thiserror.workspace = true
 tracing.workspace = true
 ash.workspace = true
 vk-mem.workspace = true
+winit.workspace = true
+ash-window = "0.13"
 
 [build-dependencies]
 bindgen.workspace = true
