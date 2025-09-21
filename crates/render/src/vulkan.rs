@@ -65,6 +65,32 @@ impl VulkanRenderer {
     // TODO: Add full Vulkan implementation with DMA-BUF support
 }
 
+impl crate::RendererBackend for VulkanRenderer {
+    fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(self.init()?)
+    }
+
+    fn render_frame(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        Ok(self.render_frame()?)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(self.resize(width, height)?)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.is_ready()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 impl Drop for VulkanRenderer {
     fn drop(&mut self) {
         if self.initialized {

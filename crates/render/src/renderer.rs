@@ -6,6 +6,27 @@
 use tracing::{debug, info, warn};
 use crate::VulkanRenderer;
 
+/// Renderer trait for different rendering backends
+pub trait RendererBackend {
+    /// Initialize the renderer
+    fn init(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Render a frame and return upload bytes for performance monitoring
+    fn render_frame(&mut self) -> Result<u64, Box<dyn std::error::Error>>;
+
+    /// Resize the renderer
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Check if renderer is ready
+    fn is_ready(&self) -> bool;
+
+    /// Get renderer as any for downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get renderer as any mutable for downcasting
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
 /// Renderer configuration
 #[derive(Debug, Clone)]
 pub struct RendererConfig {
@@ -24,19 +45,17 @@ impl Default for RendererConfig {
     }
 }
 
-/// Simple renderer placeholder
+/// Main renderer that holds the active backend
 pub struct Renderer {
-    config: RendererConfig,
-    initialized: bool,
+    backend: Box<dyn RendererBackend>,
 }
 
 impl Renderer {
-    /// Create a new renderer
+    /// Create a new renderer with placeholder backend
     pub fn new(config: RendererConfig) -> Self {
         info!("Creating renderer with config: {:?}", config);
         Self {
-            config,
-            initialized: false,
+            backend: Box::new(PlaceholderRenderer::new(config)),
         }
     }
 
@@ -44,21 +63,67 @@ impl Renderer {
     pub fn new_vulkan(window: &winit::window::Window) -> Result<Self, Box<dyn std::error::Error>> {
         info!("Creating Vulkan renderer with DMA-BUF support");
         let vulkan_renderer = VulkanRenderer::new(window)?;
-        // For now, wrap it in a placeholder - we'll refactor this later
-        Ok(Self::new(RendererConfig::default()))
+        Ok(Self {
+            backend: Box::new(vulkan_renderer),
+        })
     }
 
     /// Initialize the renderer
     pub fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Initializing renderer...");
-        // TODO: Initialize Vulkan, create swapchain, etc.
+        self.backend.init()
+    }
+
+    /// Render a frame and return upload bytes (for performance monitoring)
+    pub fn render_frame(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        self.backend.render_frame()
+    }
+
+    /// Resize the renderer
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+        self.backend.resize(width, height)
+    }
+
+    /// Check if renderer is ready
+    pub fn is_ready(&self) -> bool {
+        self.backend.is_ready()
+    }
+
+    /// Try to cast to Vulkan renderer for DMA-BUF operations
+    pub fn as_vulkan(&mut self) -> Option<&mut VulkanRenderer> {
+        self.backend.as_any_mut().downcast_mut::<VulkanRenderer>()
+    }
+}
+
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::new(RendererConfig::default())
+    }
+}
+
+/// Placeholder renderer implementation
+pub struct PlaceholderRenderer {
+    config: RendererConfig,
+    initialized: bool,
+}
+
+impl PlaceholderRenderer {
+    pub fn new(config: RendererConfig) -> Self {
+        Self {
+            config,
+            initialized: false,
+        }
+    }
+}
+
+impl RendererBackend for PlaceholderRenderer {
+    fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("Initializing placeholder renderer...");
         warn!("Renderer initialization is placeholder - Vulkan not yet implemented");
         self.initialized = true;
         Ok(())
     }
 
-    /// Render a frame and return upload bytes (for performance monitoring)
-    pub fn render_frame(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+    fn render_frame(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
         if !self.initialized {
             return Err("Renderer not initialized".into());
         }
@@ -79,8 +144,7 @@ impl Renderer {
         Ok(upload_bytes)
     }
 
-    /// Resize the renderer
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+    fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
         if !self.initialized {
             return Err("Renderer not initialized".into());
         }
@@ -92,26 +156,22 @@ impl Renderer {
         Ok(())
     }
 
-    /// Get renderer configuration
-    pub fn config(&self) -> &RendererConfig {
-        &self.config
-    }
-
-    /// Check if renderer is ready
-    pub fn is_ready(&self) -> bool {
+    fn is_ready(&self) -> bool {
         self.initialized
     }
-}
 
-impl Default for Renderer {
-    fn default() -> Self {
-        Self::new(RendererConfig::default())
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        if self.initialized {
+        if self.is_ready() {
             info!("Renderer shutting down");
             // TODO: Cleanup Vulkan resources
         }

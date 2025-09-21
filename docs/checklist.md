@@ -46,7 +46,7 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 * [x] Negotiation `video/x-raw(memory:DMABuf)`
 * [x] DMABUF‑Import in Vulkan (External Memory)
 * [x] Zero‑Copy Pfaderkennung + UI‑Farbcodes
-* [ ] Metrik: Upload‑Bytes≈0 im Optimum
+* [x] Metrik: Upload‑Bytes≈0 im Optimum
 * [ ] Fallback: SW‑Decode Pfad stabil
 
 ---
