@@ -81,7 +81,7 @@ pub struct CanvasInteraction {
     pub selected_layer: Option<LayerId>,
     pub is_dragging: bool,
     pub drag_start: [f32; 2],
-    pub transform_handle: Option<TransformHandle>,
+    pub gizmo_handle: Option<mvlc_core::GizmoHandle>,
 }
 
 impl CanvasViewport {
@@ -120,67 +120,48 @@ impl CanvasViewport {
 
 impl CanvasInteraction {
     /// Check if a point hits a layer
-    pub fn hit_test(&self, canvas_pos: [f32; 2], layer: &Layer, viewport: &CanvasViewport) -> bool {
-        let layer_pos = layer.transform.translation;
-        let layer_size = [400.0, 225.0]; // Placeholder size (16:9 aspect ratio)
-
-        let half_width = layer_size[0] / 2.0 * layer.transform.scale[0];
-        let half_height = layer_size[1] / 2.0 * layer.transform.scale[1];
-
-        canvas_pos[0] >= layer_pos[0] - half_width &&
-        canvas_pos[0] <= layer_pos[0] + half_width &&
-        canvas_pos[1] >= layer_pos[1] - half_height &&
-        canvas_pos[1] <= layer_pos[1] + half_height
+    pub fn hit_test(&self, canvas_pos: [f32; 2], layer: &Layer, _viewport: &CanvasViewport) -> bool {
+        // Use the layer's built-in hit testing with placeholder video dimensions
+        let video_width = 1920.0;  // Assume 1080p video
+        let video_height = 1080.0;
+        layer.contains_point(canvas_pos, video_width, video_height)
     }
 
-    /// Find the transform handle at a given canvas position for a layer
-    pub fn hit_test_handle(&self, canvas_pos: [f32; 2], layer: &Layer, handle_size: f32) -> Option<TransformHandle> {
-        if !layer.visible {
+    /// Find the gizmo handle at a given canvas position for a layer
+    pub fn hit_test_handle(&self, canvas_pos: [f32; 2], layer: &Layer, handle_size: f32) -> Option<mvlc_core::GizmoHandle> {
+        if !layer.visible || !layer.selected {
             return None;
         }
 
-        let layer_pos = layer.transform.translation;
-        let layer_size = [400.0, 225.0]; // Placeholder size
+        // Use the layer's built-in gizmo detection
+        let video_width = 1920.0;  // Assume 1080p video
+        let video_height = 1080.0;
+        let handle = layer.gizmo_handle_at(canvas_pos, video_width, video_height, handle_size);
 
-        let scaled_width = layer_size[0] * layer.transform.scale[0];
-        let scaled_height = layer_size[1] * layer.transform.scale[1];
-
-        let handles = [
-            (TransformHandle::ScaleTopLeft, [-scaled_width/2.0, -scaled_height/2.0]),
-            (TransformHandle::ScaleTopRight, [scaled_width/2.0, -scaled_height/2.0]),
-            (TransformHandle::ScaleBottomLeft, [-scaled_width/2.0, scaled_height/2.0]),
-            (TransformHandle::ScaleBottomRight, [scaled_width/2.0, scaled_height/2.0]),
-        ];
-
-        for (handle, offset) in handles.iter() {
-            let handle_pos = [layer_pos[0] + offset[0], layer_pos[1] + offset[1]];
-            let distance = ((canvas_pos[0] - handle_pos[0]).powi(2) + (canvas_pos[1] - handle_pos[1]).powi(2)).sqrt();
-            if distance <= handle_size / 2.0 {
-                return Some(*handle);
-            }
+        if handle != mvlc_core::GizmoHandle::None {
+            Some(handle)
+        } else {
+            None
         }
-
-        // Check rotate handle (above top edge)
-        let rotate_pos = [layer_pos[0], layer_pos[1] - scaled_height/2.0 - 30.0];
-        let distance = ((canvas_pos[0] - rotate_pos[0]).powi(2) + (canvas_pos[1] - rotate_pos[1]).powi(2)).sqrt();
-        if distance <= handle_size / 2.0 {
-            return Some(TransformHandle::Rotate);
-        }
-
-        None
     }
 
-    /// Start dragging a layer
-    pub fn start_drag(&mut self, layer_id: LayerId, start_pos: [f32; 2]) {
-        self.selected_layer = Some(layer_id);
+    /// Start dragging a layer or gizmo handle
+    pub fn start_drag(&mut self, canvas_pos: [f32; 2], layer: &Layer, handle_size: f32) {
         self.is_dragging = true;
-        self.drag_start = start_pos;
+        self.drag_start = canvas_pos;
+
+        // Check for gizmo handles first
+        if let Some(handle) = self.hit_test_handle(canvas_pos, layer, handle_size) {
+            self.gizmo_handle = Some(handle);
+        } else {
+            self.gizmo_handle = Some(mvlc_core::GizmoHandle::Move);
+        }
     }
 
     /// Stop dragging
     pub fn stop_drag(&mut self) {
         self.is_dragging = false;
-        self.transform_handle = None;
+        self.gizmo_handle = None;
     }
 }
 
@@ -200,12 +181,14 @@ impl AppState {
     pub fn new(window: &winit::window::Window) -> Self {
         let mut project = Project::new("Untitled Project".to_string(), 1920, 1080);
 
-        // Add a test layer
-        let layer_id = project.layers.add_layer("Test Video".to_string());
-        if let Some(layer) = project.layers.get_layer_mut(layer_id) {
-            layer.set_position(100.0, 100.0);
-            layer.set_scale(0.5, 0.5);
-        }
+    // Create initial layers for multi-track testing
+    let test_videos = vec![
+        "test1.mp4".to_string(),
+        "test2.mp4".to_string(),
+        "test3.mp4".to_string(),
+    ];
+
+    project.layers.create_multi_track_setup(&test_videos);
 
         let badges = vec![
             RuntimeBadge::new("Decode".to_string(), "SW".to_string(), BadgeState::Fallback),
@@ -264,7 +247,7 @@ impl AppState {
                 selected_layer: None,
                 is_dragging: false,
                 drag_start: [0.0, 0.0],
-                transform_handle: None,
+                gizmo_handle: None,
             },
             av_sync_manager,
             renderer,
@@ -535,30 +518,33 @@ fn show_ui(ctx: &egui::Context, app_state: &mut AppState) {
 
             if let Some((layer_id, handle)) = clicked_handle {
                 app_state.canvas_interaction.selected_layer = Some(layer_id);
-                app_state.canvas_interaction.transform_handle = Some(handle);
-                app_state.canvas_interaction.start_drag(layer_id, canvas_pos);
+                // Get the layer for gizmo interaction
+                if let Some(layer) = app_state.project.layers.get_layer(layer_id) {
+                    app_state.canvas_interaction.start_drag(canvas_pos, layer, 20.0);
+                }
             } else if let Some(layer_id) = clicked_layer {
                 app_state.canvas_interaction.selected_layer = Some(layer_id);
-                app_state.canvas_interaction.transform_handle = None;
-                app_state.canvas_interaction.start_drag(layer_id, canvas_pos);
+                // Get the layer for gizmo interaction
+                if let Some(layer) = app_state.project.layers.get_layer(layer_id) {
+                    app_state.canvas_interaction.start_drag(canvas_pos, layer, 20.0);
+                }
             } else {
                 app_state.canvas_interaction.selected_layer = None;
-                app_state.canvas_interaction.transform_handle = None;
+                app_state.canvas_interaction.stop_drag();
             }
         }
 
         if canvas_response.drag_started() {
             // Start dragging if we have a selection
-            if app_state.canvas_interaction.selected_layer.is_some() {
+            if let Some(layer_id) = app_state.canvas_interaction.selected_layer {
                 let canvas_pos = app_state.canvas_viewport.screen_to_canvas(
                     [canvas_response.interact_pointer_pos().unwrap_or_default().x,
                      canvas_response.interact_pointer_pos().unwrap_or_default().y],
                     canvas_response.rect
                 );
-                app_state.canvas_interaction.start_drag(
-                    app_state.canvas_interaction.selected_layer.unwrap(),
-                    canvas_pos
-                );
+                if let Some(layer) = app_state.project.layers.get_layer(layer_id) {
+                    app_state.canvas_interaction.start_drag(canvas_pos, layer, 20.0);
+                }
             }
         }
 
@@ -576,30 +562,36 @@ fn show_ui(ctx: &egui::Context, app_state: &mut AppState) {
 
             if let Some(layer_id) = app_state.canvas_interaction.selected_layer {
                 if let Some(layer) = app_state.project.layers.get_layer_mut(layer_id) {
-                    if let Some(handle) = app_state.canvas_interaction.transform_handle {
+                    if let Some(handle) = app_state.canvas_interaction.gizmo_handle {
                         match handle {
-                            TransformHandle::ScaleTopLeft => {
+                            mvlc_core::GizmoHandle::ScaleTopLeft => {
                                 layer.transform.scale[0] *= (1.0 - delta[0] / 100.0).max(0.1);
                                 layer.transform.scale[1] *= (1.0 - delta[1] / 100.0).max(0.1);
                             }
-                            TransformHandle::ScaleTopRight => {
+                            mvlc_core::GizmoHandle::ScaleTopRight => {
                                 layer.transform.scale[0] *= (1.0 + delta[0] / 100.0).max(0.1);
                                 layer.transform.scale[1] *= (1.0 - delta[1] / 100.0).max(0.1);
                             }
-                            TransformHandle::ScaleBottomLeft => {
+                            mvlc_core::GizmoHandle::ScaleBottomLeft => {
                                 layer.transform.scale[0] *= (1.0 - delta[0] / 100.0).max(0.1);
                                 layer.transform.scale[1] *= (1.0 + delta[1] / 100.0).max(0.1);
                             }
-                            TransformHandle::ScaleBottomRight => {
+                            mvlc_core::GizmoHandle::ScaleBottomRight => {
                                 layer.transform.scale[0] *= (1.0 + delta[0] / 100.0).max(0.1);
                                 layer.transform.scale[1] *= (1.0 + delta[1] / 100.0).max(0.1);
                             }
-                            TransformHandle::Rotate => {
+                            mvlc_core::GizmoHandle::Rotate => {
                                 layer.transform.rotation += delta[0] * 0.01;
                             }
+                            mvlc_core::GizmoHandle::Move => {
+                                // Move the layer
+                                layer.transform.translation[0] += delta[0];
+                                layer.transform.translation[1] += delta[1];
+                            }
+                            mvlc_core::GizmoHandle::None => {}
                         }
                     } else {
-                        // Move the layer
+                        // Default to move if no gizmo handle
                         layer.transform.translation[0] += delta[0];
                         layer.transform.translation[1] += delta[1];
                     }

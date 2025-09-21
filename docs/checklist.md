@@ -53,10 +53,10 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## M3 — Mehrspur‑Compositing
 
-* [ ] Mehrere Video‑Layer parallel
-* [ ] Instanzierte Draws
-* [ ] Per‑Layer Opacity, Mute
-* [ ] Canvas‑Gizmos: Scale‑Handles, Rotation, Snapping
+* [x] Mehrere Video‑Layer parallel
+* [x] Instanzierte Draws
+* [x] Per‑Layer Opacity, Mute
+* [x] Canvas‑Gizmos: Scale‑Handles, Rotation, Snapping
 * [ ] Stress‑Tests (3–6 Streams)
 
 ---
