@@ -1,0 +1,99 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*.backup
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# CI/CD artifacts
+*.profraw
+*.profdata
+
+# Benchmark artifacts
+perf.data
+perf.data.old
+
+# GStreamer/GLib artifacts
+gst-build/
+glib-build/
+
+# Vulkan/GL artifacts
+*.spv
+*.vert
+*.frag
+*.geom
+*.tesc
+*.tese
+
+# FFmpeg artifacts
+ffmpeg-build/
+
+# Development scripts output
+*.out
+*.exe
+
+# Package artifacts
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+
+# Documentation build artifacts
+book/
+docs/build/
+
+# Test fixtures that might be generated
+tests/fixtures/generated/
+
+# Core dumps
+core
+*.core
+
+# Rust-specific
+rustc-ice-*.txt
+*.rlib
+*.rmeta
+*.dSYM
+*.pdb
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Coverage reports
+*.profraw
+coverage/
+lcov.info
+
+# Flamegraphs
+*.svg
+*.collapsed
