@@ -75,6 +75,52 @@ pub struct VideoFrame {
     pub pts: u64, // Presentation timestamp in nanoseconds
     pub data: Vec<u8>, // Frame data (DMA-BUF fd info in zero-copy mode)
     pub is_dmabuf: bool, // Whether this is a DMA-BUF export
+    pub colorimetry: Option<VideoColorimetry>, // Color metadata
+}
+
+/// Colorimetry information from video stream
+#[derive(Debug, Clone)]
+pub struct VideoColorimetry {
+    pub primaries: String,
+    pub transfer: String,
+    pub matrix: String,
+    pub max_cll: Option<f32>,
+    pub max_fall: Option<f32>,
+}
+
+/// Extract colorimetry information from GStreamer caps
+fn extract_colorimetry_from_caps(caps: &gst::CapsRef) -> Option<VideoColorimetry> {
+    if let Some(structure) = caps.structure(0) {
+        let primaries = structure.get::<&str>("colorimetry").ok()
+            .and_then(|c| c.split('-').next())
+            .map(|s| s.to_string());
+
+        let transfer = structure.get::<&str>("colorimetry").ok()
+            .and_then(|c| c.split('-').nth(1))
+            .map(|s| s.to_string());
+
+        let matrix = structure.get::<&str>("colorimetry").ok()
+            .and_then(|c| c.split('-').nth(2))
+            .map(|s| s.to_string());
+
+        // Extract HDR metadata
+        let max_cll = structure.get::<f32>("max-cll").ok();
+        let max_fall = structure.get::<f32>("max-fall").ok();
+
+        if primaries.is_some() || transfer.is_some() || matrix.is_some() {
+            Some(VideoColorimetry {
+                primaries: primaries.unwrap_or_else(|| "bt709".to_string()),
+                transfer: transfer.unwrap_or_else(|| "bt709".to_string()),
+                matrix: matrix.unwrap_or_else(|| "bt709".to_string()),
+                max_cll,
+                max_fall,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 impl VideoFrame {
@@ -210,6 +256,9 @@ impl VideoDecoder {
                         let height = structure.get::<i32>("height").unwrap_or(1080) as u32;
                         let format = structure.get::<&str>("format").unwrap_or("NV12").to_string();
 
+                        // Extract colorimetry from caps
+                        let colorimetry = extract_colorimetry_from_caps(caps);
+
                         // Extract frame data
                         let pts = buffer.pts().unwrap_or(gst::ClockTime::from_nseconds(0)).nseconds();
                         let data = buffer.map_readable()
@@ -224,6 +273,7 @@ impl VideoDecoder {
                             pts,
                             data,
                             is_dmabuf: false, // TODO: Implement DMA-BUF detection
+                            colorimetry,
                         };
 
                         // Send frame to receiver
@@ -292,6 +342,7 @@ impl VideoDecoder {
         // For now, return None as this is not critical for initial functionality
         None
     }
+
 }
 
 impl Drop for VideoDecoder {
@@ -424,6 +475,9 @@ impl HardwareVideoDecoder {
                         let height = structure.get::<i32>("height").unwrap_or(1080) as u32;
                         let format = structure.get::<&str>("format").unwrap_or("NV12").to_string();
 
+                        // Extract colorimetry from caps
+                        let colorimetry = extract_colorimetry_from_caps(caps);
+
                         // Check for DMA-BUF memory type
                         // TODO: Implement proper DMA-BUF detection when API is available
                         // For now, assume DMA-BUF if we have the right caps structure
@@ -454,6 +508,7 @@ impl HardwareVideoDecoder {
                             pts,
                             data,
                             is_dmabuf,
+                            colorimetry,
                         };
 
                         if let Err(e) = frame_sender.send(frame) {

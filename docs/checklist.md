@@ -63,10 +63,10 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## M4 — Farbpipeline & HDR
 
-* [ ] libplacebo Farbraum‑Konfiguration (Primaries/Matrix/Transfer)
-* [ ] HDR→SDR Tonemapping
-* [ ] Per‑Stream Colorimetrie aus Metadaten
-* [ ] Badge „Color: libplacebo‑HDR/SDR“
+* [x] libplacebo Farbraum‑Konfiguration (Primaries/Matrix/Transfer)
+* [x] HDR→SDR Tonemapping
+* [x] Per‑Stream Colorimetrie aus Metadaten
+* [x] Badge „Color: libplacebo‑HDR/SDR"
 * [ ] Visual‑Tests gegen Referenz (mpv)
 
 ---

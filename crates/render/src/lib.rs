@@ -5,6 +5,8 @@
 
 pub mod renderer;
 pub mod vulkan;
+pub mod color;
 
 pub use renderer::*;
 pub use vulkan::*;
+pub use color::*;

@@ -1,6 +1,6 @@
 use mvlc_core::{Project, Time, LayerId, Layer, AvSyncManager, StreamId, PerformanceMonitor};
 use mvlc_media::{AudioOutput, init as init_gstreamer, check_vaapi_support, check_dmabuf_support};
-use mvlc_render::{Renderer, VulkanRenderer};
+use mvlc_render::{Renderer, VulkanRenderer, ColorPipeline, ColorPipelineStatus};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -175,6 +175,7 @@ pub struct AppState {
     pub av_sync_manager: AvSyncManager<mvlc_media::AudioMasterClock>,
     pub renderer: Renderer,
     pub performance_monitor: PerformanceMonitor,
+    pub color_pipeline: Option<ColorPipeline>,
 }
 
 impl AppState {
@@ -238,6 +239,18 @@ impl AppState {
             tracing::warn!("Failed to initialize renderer: {}", e);
         }
 
+        // Initialize color pipeline
+        let color_pipeline = match ColorPipeline::new() {
+            Ok(pipeline) => {
+                tracing::info!("Color pipeline initialized successfully");
+                Some(pipeline)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize color pipeline: {}, color management will be unavailable", e);
+                None
+            }
+        };
+
         Self {
             project,
             badges,
@@ -252,6 +265,7 @@ impl AppState {
             av_sync_manager,
             renderer,
             performance_monitor: PerformanceMonitor::new(),
+            color_pipeline,
         }
     }
 }
@@ -462,10 +476,20 @@ fn update_badges_for_state(app_state: &mut AppState) {
         }
     }
 
-    // Color badge - basic color management
+    // Color badge - libplacebo HDR/SDR color management
     if let Some(color_badge) = app_state.badges.iter_mut().find(|b| b.name == "Color") {
-        color_badge.value = "Basic".to_string();
-        color_badge.state = BadgeState::Fallback; // Fallback until we implement libplacebo
+        if let Some(color_pipeline) = &app_state.color_pipeline {
+            let status = color_pipeline.status();
+            color_badge.value = status.status_string();
+            if status.is_hdr_enabled {
+                color_badge.state = BadgeState::Optimal; // HDR support active
+            } else {
+                color_badge.state = BadgeState::Partial; // SDR with libplacebo
+            }
+        } else {
+            color_badge.value = "Basic".to_string();
+            color_badge.state = BadgeState::Fallback; // No libplacebo
+        }
     }
 }
 

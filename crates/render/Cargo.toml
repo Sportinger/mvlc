@@ -20,5 +20,9 @@ vk-mem.workspace = true
 winit.workspace = true
 ash-window = "0.13"
 
+# Color management and processing (optional)
+# libplacebo = "0.7"
+# libplacebo-sys = "0.7"
+
 [build-dependencies]
 bindgen.workspace = true
