@@ -1,0 +1,19 @@
+[package]
+name = "mvlc-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+mvlc-core.workspace = true
+mvlc-media.workspace = true
+mvlc-render.workspace = true
+mvlc-project.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = "4.0"

@@ -1,0 +1,22 @@
+[package]
+name = "mvlc-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[lib]
+name = "mvlc_render"
+
+[dependencies]
+mvlc-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ash.workspace = true
+vk-mem.workspace = true
+
+[build-dependencies]
+bindgen.workspace = true

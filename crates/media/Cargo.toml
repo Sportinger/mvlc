@@ -1,0 +1,21 @@
+[package]
+name = "mvlc-media"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[lib]
+name = "mvlc_media"
+
+[dependencies]
+mvlc-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+gstreamer.workspace = true
+gstreamer-video.workspace = true
+gstreamer-app.workspace = true
+cpal.workspace = true

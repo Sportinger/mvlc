@@ -6,7 +6,7 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## Global
 
-* [ ] Repo initialisiert (Workspace, Lizenzen, CI‑Stub)
+* [x] Repo initialisiert (Workspace, Lizenzen, CI‑Stub)
 * [ ] Coding‑Standards dokumentiert (`*.spec.md`, Telemetrie‑Pflicht)
 * [ ] Logging/Tracing Grundsetup (`tracing`, NDJSON Writer)
 * [ ] Benchmark‑Skeleton (criterion) aktiv
@@ -15,12 +15,12 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## M0 — Bootstrap
 
-* [ ] `winit`/`egui` Fenster + Eventloop
+* [x] `winit`/`egui` Fenster + Eventloop
 * [ ] Vulkan Swapchain init
 * [ ] libplacebo minimal binden und Test‑Quad rendern
 * [ ] GStreamer via `gstreamer-rs` verlinken
 * [ ] Single‑Stream SW‑Decode → CPU→GPU Upload → Anzeige
-* [ ] Toolbar mit statischen Badges
+* [x] Toolbar mit statischen Badges
 * [ ] Basis‑Tracing: Frame begin/end
 
 ---
