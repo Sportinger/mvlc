@@ -18,7 +18,8 @@ tracing.workspace = true
 ash.workspace = true
 vk-mem.workspace = true
 winit.workspace = true
-ash-window = "0.13"
+ash-window = "0.12"
+raw-window-handle = "0.5"
 
 # Color management and processing (optional)
 # libplacebo = "0.7"

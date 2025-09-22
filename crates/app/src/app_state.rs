@@ -78,18 +78,24 @@ impl AppState {
             }
         }
 
-        let mut renderer = match Renderer::new_vulkan(window) {
-            Ok(r) => {
-                tracing::info!("Using Vulkan renderer with DMA-BUF support");
-                r
+        let use_vulkan = false;
+
+        let mut renderer = if use_vulkan {
+            match Renderer::new_vulkan(window) {
+                Ok(r) => {
+                    tracing::info!("Using Vulkan renderer with DMA-BUF support");
+                    r
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create Vulkan renderer: {}, falling back to placeholder",
+                        e
+                    );
+                    Renderer::default()
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to create Vulkan renderer: {}, falling back to placeholder",
-                    e
-                );
-                Renderer::default()
-            }
+        } else {
+            Renderer::default()
         };
 
         if let Err(e) = renderer.init() {
@@ -143,6 +149,20 @@ impl AppState {
                 self.performance_monitor.record_frame(
                     frame.stream_id.0,
                     upload_bytes,
+                    Duration::from_millis(16),
+                    false,
+                );
+            }
+        }
+    }
+
+    /// Drain video decoders without uploading frames. Useful for headless render paths.
+    pub fn poll_video_frames_headless(&mut self) {
+        for (_layer_id, state) in self.video_layers.iter_mut() {
+            if let Some(frame) = state.drain_latest_frame() {
+                self.performance_monitor.record_frame(
+                    frame.stream_id.0,
+                    0,
                     Duration::from_millis(16),
                     false,
                 );

@@ -12,6 +12,7 @@ use crate::ui::show_ui;
 use anyhow::anyhow;
 use egui_wgpu::{Renderer as EguiWgpuRenderer, ScreenDescriptor};
 use mvlc_media::{check_dmabuf_support, check_vaapi_support, init as init_gstreamer};
+use mvlc_render::Renderer;
 use std::sync::Arc;
 use winit::{
     event::{Event, WindowEvent},
@@ -131,6 +132,24 @@ impl GraphicsState {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if vulkan_preview_enabled() {
+        return run_vulkan();
+    }
+
+    run_wgpu()
+}
+
+fn vulkan_preview_enabled() -> bool {
+    match std::env::var("MVLC_VULKAN_SWAPCHAIN") {
+        Ok(value) => {
+            let value = value.to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     if let Err(e) = init_gstreamer() {
@@ -312,6 +331,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 }
             }
+            Event::AboutToWait => {
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    })?;
+
+    Ok(())
+}
+
+fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    if let Err(e) = init_gstreamer() {
+        tracing::warn!("Failed to initialize GStreamer: {}", e);
+    } else {
+        tracing::info!("GStreamer initialized successfully");
+        tracing::info!(
+            "VA-API hardware decoding available: {}",
+            check_vaapi_support()
+        );
+        tracing::info!(
+            "DMA-BUF zero-copy memory available: {}",
+            check_dmabuf_support()
+        );
+    }
+
+    tracing::info!("Starting MVLC Vulkan prototype");
+
+    let event_loop = EventLoop::new()?;
+    let window = Arc::new(
+        WindowBuilder::new()
+            .with_title("MVLC - Vulkan Preview")
+            .with_inner_size(winit::dpi::LogicalSize::new(640.0, 480.0))
+            .build(&event_loop)?,
+    );
+
+    let mut app_state = AppState::new(window.as_ref());
+    let mut renderer = Renderer::new_vulkan(window.as_ref())?;
+    renderer.init()?;
+
+    event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(ControlFlow::Poll);
+
+        match event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    tracing::info!("Window close requested, exiting");
+                    elwt.exit();
+                }
+                WindowEvent::Resized(size) => {
+                    if let Err(err) = renderer.resize(size.width, size.height) {
+                        tracing::warn!("Failed to resize Vulkan renderer: {err:?}");
+                    }
+                    window.request_redraw();
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    window.request_redraw();
+                }
+                WindowEvent::DroppedFile(path) => {
+                    handle_dropped_file(&mut app_state, &path);
+                }
+                WindowEvent::RedrawRequested => {
+                    app_state.poll_video_frames_headless();
+                    if let Err(err) = renderer.render_frame() {
+                        tracing::error!("Vulkan render failed: {err:?}");
+                    }
+                    window.request_redraw();
+                }
+                _ => {}
+            },
             Event::AboutToWait => {
                 window.request_redraw();
             }

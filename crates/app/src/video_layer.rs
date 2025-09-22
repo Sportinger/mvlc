@@ -32,6 +32,14 @@ impl VideoLayerState {
         latest
     }
 
+    pub fn drain_latest_frame(&mut self) -> Option<VideoFrame> {
+        let mut latest: Option<VideoFrame> = None;
+        while let Some(frame) = self.decoder.try_recv_frame() {
+            latest = Some(frame);
+        }
+        latest
+    }
+
     pub fn texture_id(&self) -> Option<TextureId> {
         self.gpu.as_ref().map(|gpu| gpu.texture_id)
     }
