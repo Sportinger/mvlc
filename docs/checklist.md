@@ -20,7 +20,7 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 * [ ] Vulkan Swapchain init
 * [ ] libplacebo minimal binden und Test‑Quad rendern
 * [ ] GStreamer via `gstreamer-rs` verlinken
-* [ ] Single‑Stream SW‑Decode → CPU→GPU Upload → Anzeige
+* [x] Single‑Stream SW‑Decode → CPU→GPU Upload → Anzeige
 * [x] Toolbar mit statischen Badges
 * [ ] Basis‑Tracing: Frame begin/end
 
