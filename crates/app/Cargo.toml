@@ -18,3 +18,6 @@ tracing-subscriber.workspace = true
 winit.workspace = true
 egui.workspace = true
 egui-winit.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
+pollster.workspace = true

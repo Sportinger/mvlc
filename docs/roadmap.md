@@ -61,9 +61,10 @@ Scope: Linux-first desktop video player & compositor with Figma‑like Canvas
 
 ### M0 — Bootstrap (2–3 Wochen)
 
-* Workspace, CI, Clippy/Format, minimaler App‑Loop (winit/egui).
-* GStreamer Probe: Single‑Stream Playback, SW‑Decode → CPU→GPU Upload.
-* Vulkan Swapchain + libplacebo Einbindung, einfacher Textur‑Quad.
+* Workspace, CI, Clippy/Format, minimaler App-Loop (winit/egui).
+* GStreamer Probe: Single-Stream Playback, SW-Decode → CPU→GPU Upload.
+* Vulkan Swapchain + libplacebo Einbindung, einfacher Textur-Quad.
+* **Neu:** egui wird derzeit über einen wgpu-Swapchain-Fallback präsentiert, bis der Vulkanpfad bereit steht.
 * Toolbar mit statischen Badges.
 
 ### M1 — Baseline Player (2–4 Wochen)

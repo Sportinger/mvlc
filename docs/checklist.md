@@ -16,6 +16,7 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 ## M0 — Bootstrap
 
 * [x] `winit`/`egui` Fenster + Eventloop
+* [x] egui UI über wgpu Swapchain rendern (Fallback zum echten Vulkanpfad)
 * [ ] Vulkan Swapchain init
 * [ ] libplacebo minimal binden und Test‑Quad rendern
 * [ ] GStreamer via `gstreamer-rs` verlinken

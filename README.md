@@ -8,6 +8,7 @@ Linux‑first Desktop‑Player mit Figma‑ähnlicher Canvas: mehrere Videos gle
 
 * **Phase:** Early draft (M0→M1).
 * **Roadmap:** siehe [`mvlc-ROADMAP.md`](mvlc-ROADMAP.md).
+* **UI Renderpfad:** egui läuft jetzt über einen wgpu‑Swapchain‑Fallback; Video‑Compositing bleibt Platzhalter.
 
 Badges (geplant): CI • Clippy • Tests • Benchmarks • Coverage • Nightly Artifacts
 
