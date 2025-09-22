@@ -3,7 +3,7 @@
 //! Implements drop/repeat window algorithm for maintaining audio/video synchronization.
 //! Uses audio master clock as reference and adjusts video frame presentation timing.
 
-use crate::{Clock, Time, FrameTiming};
+use crate::{Clock, FrameTiming, Time};
 use std::collections::VecDeque;
 
 /// A/V synchronization state for a video stream
@@ -38,7 +38,7 @@ impl AvSyncState {
         let frame_duration = Time::from_secs(1).div((fps * 1_000_000_000.0) as i64);
         Self {
             frame_duration,
-            max_drift_ms: 8.0, // Allow ±8ms drift before correction
+            max_drift_ms: 8.0,     // Allow ±8ms drift before correction
             correction_window: 10, // Look at last 10 frames for correction decisions
             drift_accumulator: 0.0,
             frame_history: VecDeque::with_capacity(50),
@@ -51,7 +51,8 @@ impl AvSyncState {
         // Target time = frame_number * frame_duration
         let target_time = self.frame_duration.mul(frame_number as i64);
         // Adjust for any accumulated drift corrections
-        let adjusted_time = target_time.add(Time::from_millis((self.drift_accumulator * 1000.0) as i64));
+        let adjusted_time =
+            target_time.add(Time::from_millis((self.drift_accumulator * 1000.0) as i64));
         adjusted_time
     }
 
@@ -88,11 +89,18 @@ impl AvSyncState {
 
         // Update drift accumulator based on recent history
         if self.frame_history.len() >= self.correction_window {
-            let recent_frames: Vec<_> = self.frame_history.iter().rev().take(self.correction_window).collect();
-            let avg_error: f64 = recent_frames.iter()
+            let recent_frames: Vec<_> = self
+                .frame_history
+                .iter()
+                .rev()
+                .take(self.correction_window)
+                .collect();
+            let avg_error: f64 = recent_frames
+                .iter()
                 .filter_map(|t| t.presentation_error())
                 .map(|e| e.as_nanos() as f64 / 1_000_000.0) // Convert to ms
-                .sum::<f64>() / recent_frames.len() as f64;
+                .sum::<f64>()
+                / recent_frames.len() as f64;
 
             // Gradually correct accumulated drift
             self.drift_accumulator = self.drift_accumulator * 0.95 + avg_error * 0.05;
@@ -147,7 +155,9 @@ impl<C: Clock> VideoScheduler<C> {
     /// Get the next frame that should be presented
     pub fn next_frame(&mut self) -> Option<ScheduledFrame> {
         let audio_time = self.audio_clock.now();
-        let target_time = self.sync_state.next_frame_time(audio_time, self.next_frame_number);
+        let target_time = self
+            .sync_state
+            .next_frame_time(audio_time, self.next_frame_number);
 
         // Check if it's time to present this frame
         if audio_time >= target_time {
@@ -232,7 +242,8 @@ impl<C: Clock + Clone> AvSyncManager<C> {
 
     /// Add a video stream to sync management
     pub fn add_stream(&mut self, stream_id: crate::StreamId, audio_clock: C, fps: f64) {
-        self.schedulers.insert(stream_id, VideoScheduler::new(audio_clock, fps));
+        self.schedulers
+            .insert(stream_id, VideoScheduler::new(audio_clock, fps));
     }
 
     /// Remove a video stream
@@ -246,7 +257,12 @@ impl<C: Clock + Clone> AvSyncManager<C> {
     }
 
     /// Process frame presentation result
-    pub fn frame_presented(&mut self, stream_id: &crate::StreamId, frame: &ScheduledFrame, actual_time: Time) {
+    pub fn frame_presented(
+        &mut self,
+        stream_id: &crate::StreamId,
+        frame: &ScheduledFrame,
+        actual_time: Time,
+    ) {
         if let Some(scheduler) = self.schedulers.get_mut(stream_id) {
             scheduler.frame_presented(frame, actual_time);
         }
@@ -282,7 +298,11 @@ impl<C: Clock + Clone> AvSyncManager<C> {
             overall.max_drift_ms = overall.max_drift_ms.max(stats.max_drift_ms);
         }
         overall.avg_drift_ms = if !self.schedulers.is_empty() {
-            self.schedulers.values().map(|s| s.stats().avg_drift_ms).sum::<f64>() / self.schedulers.len() as f64
+            self.schedulers
+                .values()
+                .map(|s| s.stats().avg_drift_ms)
+                .sum::<f64>()
+                / self.schedulers.len() as f64
         } else {
             0.0
         };

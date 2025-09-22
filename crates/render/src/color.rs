@@ -5,9 +5,9 @@
 
 // TODO: Enable when libplacebo bindings are available
 // use libplacebo::*;
-use tracing::{debug, info, warn, error};
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use mvlc_core::{StreamId, Time};
+use tracing::{debug, error, info, warn};
 
 /// Color space information extracted from video metadata
 #[derive(Debug, Clone)]
@@ -57,7 +57,11 @@ impl ColorPipeline {
     }
 
     /// Extract colorimetry from video stream metadata
-    pub fn extract_colorimetry(&self, stream_id: StreamId, metadata: &VideoMetadata) -> Colorimetry {
+    pub fn extract_colorimetry(
+        &self,
+        stream_id: StreamId,
+        metadata: &VideoMetadata,
+    ) -> Colorimetry {
         debug!("Extracting colorimetry for stream {}", stream_id.0);
 
         let mut colorimetry = Colorimetry::default();
@@ -130,10 +134,20 @@ impl ColorPipeline {
     }
 
     /// Configure color pipeline for a specific stream
-    pub fn configure_for_stream(&mut self, stream_id: StreamId, colorimetry: Colorimetry) -> Result<()> {
-        info!("Configuring color pipeline for stream {}: HDR={}", stream_id.0, colorimetry.hdr_metadata.is_some());
-        debug!("Colorimetry: primaries={:?}, transfer={:?}, matrix={:?}",
-               colorimetry.primaries, colorimetry.transfer, colorimetry.matrix);
+    pub fn configure_for_stream(
+        &mut self,
+        stream_id: StreamId,
+        colorimetry: Colorimetry,
+    ) -> Result<()> {
+        info!(
+            "Configuring color pipeline for stream {}: HDR={}",
+            stream_id.0,
+            colorimetry.hdr_metadata.is_some()
+        );
+        debug!(
+            "Colorimetry: primaries={:?}, transfer={:?}, matrix={:?}",
+            colorimetry.primaries, colorimetry.transfer, colorimetry.matrix
+        );
 
         self.current_colorimetry = colorimetry.clone();
         self.is_hdr_enabled = colorimetry.hdr_metadata.is_some();
@@ -145,7 +159,11 @@ impl ColorPipeline {
     }
 
     /// Process a frame through the color pipeline
-    pub fn process_frame(&self, input_frame: &VideoFrame, output_frame: &mut VideoFrame) -> Result<()> {
+    pub fn process_frame(
+        &self,
+        input_frame: &VideoFrame,
+        output_frame: &mut VideoFrame,
+    ) -> Result<()> {
         // For now, this is a placeholder implementation
         // In a full implementation, this would use libplacebo to process the frame
 
@@ -197,9 +215,15 @@ pub struct ColorPipelineStatus {
 impl ColorPipelineStatus {
     pub fn status_string(&self) -> String {
         if self.is_hdr_enabled {
-            format!("HDR ({:?}/{:?})", self.current_primaries, self.current_transfer)
+            format!(
+                "HDR ({:?}/{:?})",
+                self.current_primaries, self.current_transfer
+            )
         } else {
-            format!("SDR ({:?}/{:?})", self.current_primaries, self.current_transfer)
+            format!(
+                "SDR ({:?}/{:?})",
+                self.current_primaries, self.current_transfer
+            )
         }
     }
 }
@@ -267,7 +291,10 @@ mod tests {
                 println!("Color pipeline status: {}", status.status_string());
             }
             Err(e) => {
-                println!("Color pipeline creation failed (expected if libplacebo not available): {}", e);
+                println!(
+                    "Color pipeline creation failed (expected if libplacebo not available): {}",
+                    e
+                );
             }
         }
     }

@@ -3,9 +3,9 @@
 //! Tracks upload bytes, frame rates, and performance characteristics
 //! to validate zero-copy operation and hardware acceleration benefits.
 
-use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 /// Performance statistics for a single stream
@@ -143,11 +143,19 @@ impl PerformanceMonitor {
 
     /// Get or create performance tracker for a stream
     pub fn get_stream(&mut self, stream_id: u64) -> &mut StreamPerformance {
-        self.streams.entry(stream_id).or_insert_with(|| StreamPerformance::new(stream_id))
+        self.streams
+            .entry(stream_id)
+            .or_insert_with(|| StreamPerformance::new(stream_id))
     }
 
     /// Record frame processing for a stream
-    pub fn record_frame(&mut self, stream_id: u64, upload_bytes: u64, frame_time: Duration, is_zero_copy: bool) {
+    pub fn record_frame(
+        &mut self,
+        stream_id: u64,
+        upload_bytes: u64,
+        frame_time: Duration,
+        is_zero_copy: bool,
+    ) {
         let stream = self.get_stream(stream_id);
         stream.record_frame(upload_bytes, frame_time, is_zero_copy);
 
@@ -170,7 +178,9 @@ impl PerformanceMonitor {
             0.0
         };
 
-        let zero_copy_streams = self.streams.values()
+        let zero_copy_streams = self
+            .streams
+            .values()
             .filter(|s| s.is_zero_copy_mode())
             .count();
 
@@ -227,16 +237,27 @@ impl GlobalPerformanceSummary {
         } else if self.avg_upload_bytes_per_frame < 1024.0 * 1024.0 {
             format!("{:.1} KB/frame", self.avg_upload_bytes_per_frame / 1024.0)
         } else {
-            format!("{:.1} MB/frame", self.avg_upload_bytes_per_frame / (1024.0 * 1024.0))
+            format!(
+                "{:.1} MB/frame",
+                self.avg_upload_bytes_per_frame / (1024.0 * 1024.0)
+            )
         }
     }
 
     /// Get performance status message
     pub fn status_message(&self) -> String {
         if self.is_fully_zero_copy {
-            format!("🎯 Zero-Copy Optimal: {} (~0 upload)", self.format_upload_bytes())
+            format!(
+                "🎯 Zero-Copy Optimal: {} (~0 upload)",
+                self.format_upload_bytes()
+            )
         } else if self.zero_copy_streams > 0 {
-            format!("⚡ Partial Zero-Copy: {} ({} of {} streams)", self.format_upload_bytes(), self.zero_copy_streams, self.active_streams)
+            format!(
+                "⚡ Partial Zero-Copy: {} ({} of {} streams)",
+                self.format_upload_bytes(),
+                self.zero_copy_streams,
+                self.active_streams
+            )
         } else {
             format!("📤 Traditional Upload: {}", self.format_upload_bytes())
         }
@@ -253,8 +274,8 @@ mod tests {
         let mut perf = StreamPerformance::new(1);
 
         // Record some frames
-        perf.record_frame(0, Duration::from_millis(33), true);  // Zero-copy
-        perf.record_frame(0, Duration::from_millis(32), true);  // Zero-copy
+        perf.record_frame(0, Duration::from_millis(33), true); // Zero-copy
+        perf.record_frame(0, Duration::from_millis(32), true); // Zero-copy
         perf.record_frame(1024 * 1024, Duration::from_millis(35), false); // 1MB upload
 
         assert_eq!(perf.frames_processed, 3);
@@ -268,8 +289,8 @@ mod tests {
         let mut monitor = PerformanceMonitor::new();
 
         // Record frames for different streams
-        monitor.record_frame(1, 0, Duration::from_millis(33), true);  // Zero-copy
-        monitor.record_frame(1, 0, Duration::from_millis(32), true);  // Zero-copy
+        monitor.record_frame(1, 0, Duration::from_millis(33), true); // Zero-copy
+        monitor.record_frame(1, 0, Duration::from_millis(32), true); // Zero-copy
         monitor.record_frame(2, 1024 * 1024, Duration::from_millis(35), false); // Upload
 
         let summary = monitor.global_summary();

@@ -6,9 +6,10 @@
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
+use gstreamer_video as gst_video;
+use mvlc_core::StreamId;
 use std::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error, info, warn};
-use mvlc_core::StreamId;
 
 /// Initialize GStreamer
 pub fn init() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,9 +73,9 @@ pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
     pub format: String,
-    pub pts: u64, // Presentation timestamp in nanoseconds
-    pub data: Vec<u8>, // Frame data (DMA-BUF fd info in zero-copy mode)
-    pub is_dmabuf: bool, // Whether this is a DMA-BUF export
+    pub pts: u64,                              // Presentation timestamp in nanoseconds
+    pub data: Vec<u8>,                         // Frame data (DMA-BUF fd info in zero-copy mode)
+    pub is_dmabuf: bool,                       // Whether this is a DMA-BUF export
     pub colorimetry: Option<VideoColorimetry>, // Color metadata
 }
 
@@ -91,15 +92,21 @@ pub struct VideoColorimetry {
 /// Extract colorimetry information from GStreamer caps
 fn extract_colorimetry_from_caps(caps: &gst::CapsRef) -> Option<VideoColorimetry> {
     if let Some(structure) = caps.structure(0) {
-        let primaries = structure.get::<&str>("colorimetry").ok()
+        let primaries = structure
+            .get::<&str>("colorimetry")
+            .ok()
             .and_then(|c| c.split('-').next())
             .map(|s| s.to_string());
 
-        let transfer = structure.get::<&str>("colorimetry").ok()
+        let transfer = structure
+            .get::<&str>("colorimetry")
+            .ok()
             .and_then(|c| c.split('-').nth(1))
             .map(|s| s.to_string());
 
-        let matrix = structure.get::<&str>("colorimetry").ok()
+        let matrix = structure
+            .get::<&str>("colorimetry")
+            .ok()
             .and_then(|c| c.split('-').nth(2))
             .map(|s| s.to_string());
 
@@ -150,10 +157,10 @@ impl VideoFrame {
             let width = self.width as usize;
             let height = self.height as usize;
             match self.format.as_str() {
-                "NV12" => (width * height * 3) / 2, // YUV420 semi-planar
-                "I420" => (width * height * 3) / 2, // YUV420 planar
+                "NV12" => (width * height * 3) / 2,    // YUV420 semi-planar
+                "I420" => (width * height * 3) / 2,    // YUV420 planar
                 "YUY2" | "UYVY" => width * height * 2, // YUV422 packed
-                _ => width * height * 4, // Assume RGBA fallback
+                _ => width * height * 4,               // Assume RGBA fallback
             }
         } else {
             self.data.len()
@@ -189,33 +196,53 @@ impl VideoDecoder {
             .name("decodebin")
             .build()?;
 
-        // App sink for frame extraction
+        // App sink for frame extraction (force RGBA for easy CPU upload)
         let appsink = gst_app::AppSink::builder()
             .name("appsink")
-            .caps(&gst::Caps::builder("video/x-raw")
-                .field("format", "NV12") // Common hardware format
-                .build())
+            .caps(
+                &gst::Caps::builder("video/x-raw")
+                    .field("format", &"RGBA")
+                    .build(),
+            )
             .build();
 
+        // Convert decoded frames into RGBA for the appsink
+        let videoconvert = gst::ElementFactory::make("videoconvert")
+            .name("videoconvert")
+            .build()?;
+
         // Add elements to pipeline
-        pipeline.add_many(&[&filesrc, &decodebin, &appsink.upcast_ref()])?;
+        pipeline.add_many(&[&filesrc, &decodebin, &videoconvert, &appsink.upcast_ref()])?;
 
         // Link elements
         filesrc.link(&decodebin)?;
+        videoconvert.link(&appsink)?;
 
-        // Connect decodebin signals
-        let appsink_clone = appsink.clone();
+        // Connect decodebin signals to videoconvert
+        let videoconvert_weak = videoconvert.downgrade();
         decodebin.connect_pad_added(move |_decodebin, src_pad| {
-            let sink_pad = appsink_clone.static_pad("sink").unwrap();
+            let Some(videoconvert) = videoconvert_weak.upgrade() else {
+                warn!("videoconvert element already dropped");
+                return;
+            };
+
+            let sink_pad = match videoconvert.static_pad("sink") {
+                Some(pad) => pad,
+                None => {
+                    error!("videoconvert sink pad missing");
+                    return;
+                }
+            };
 
             if sink_pad.is_linked() {
-                warn!("Decodebin sink pad already linked");
+                warn!("videoconvert sink pad already linked");
                 return;
             }
 
-            match src_pad.link(&sink_pad) {
-                Ok(_) => debug!("Successfully linked decodebin to appsink"),
-                Err(err) => error!("Failed to link decodebin to appsink: {}", err),
+            if let Err(err) = src_pad.link(&sink_pad) {
+                error!("Failed to link decodebin to videoconvert: {}", err);
+            } else {
+                debug!("Successfully linked decodebin to videoconvert");
             }
         });
 
@@ -228,10 +255,13 @@ impl VideoDecoder {
                     Self::handle_new_sample(appsink, stream_id_clone, &frame_sender_clone);
                     Ok(gst::FlowSuccess::Ok)
                 })
-                .build()
+                .build(),
         );
 
-        info!("Created video decoder for stream {} with file: {}", stream_id.0, file_path);
+        info!(
+            "Created video decoder for stream {} with file: {}",
+            stream_id.0, file_path
+        );
 
         Ok(Self {
             pipeline,
@@ -249,39 +279,81 @@ impl VideoDecoder {
         frame_sender: &Sender<VideoFrame>,
     ) {
         if let Ok(sample) = appsink.pull_sample() {
-            if let Some(buffer) = sample.buffer() {
-                if let Some(caps) = sample.caps() {
-                    if let Some(structure) = caps.structure(0) {
-                        let width = structure.get::<i32>("width").unwrap_or(1920) as u32;
-                        let height = structure.get::<i32>("height").unwrap_or(1080) as u32;
-                        let format = structure.get::<&str>("format").unwrap_or("NV12").to_string();
+            let Some(buffer) = sample.buffer_owned() else {
+                return;
+            };
+            let Some(caps) = sample.caps() else {
+                return;
+            };
 
-                        // Extract colorimetry from caps
-                        let colorimetry = extract_colorimetry_from_caps(caps);
-
-                        // Extract frame data
-                        let pts = buffer.pts().unwrap_or(gst::ClockTime::from_nseconds(0)).nseconds();
-                        let data = buffer.map_readable()
-                            .map(|map| map.as_slice().to_vec())
-                            .unwrap_or_else(|_| Vec::new());
-
-                        let frame = VideoFrame {
-                            stream_id,
-                            width,
-                            height,
-                            format,
-                            pts,
-                            data,
-                            is_dmabuf: false, // TODO: Implement DMA-BUF detection
-                            colorimetry,
-                        };
-
-                        // Send frame to receiver
-                        if let Err(e) = frame_sender.send(frame) {
-                            error!("Failed to send video frame: {}", e);
-                        }
-                    }
+            let info = match gst_video::VideoInfo::from_caps(&caps) {
+                Ok(info) => info,
+                Err(err) => {
+                    error!("Failed to parse video caps: {}", err);
+                    return;
                 }
+            };
+
+            // Map the buffer into a readable RGBA frame respecting stride/padding
+            let video_frame = match gst_video::VideoFrame::from_buffer_readable(buffer, &info) {
+                Ok(frame) => frame,
+                Err(_buffer) => {
+                    warn!("Failed to map video frame for reading");
+                    return;
+                }
+            };
+
+            let width = video_frame.width();
+            let height = video_frame.height();
+            let format = video_frame.format();
+
+            if format != gst_video::VideoFormat::Rgba {
+                warn!("Unexpected video format {:?}, expected RGBA", format);
+                return;
+            }
+
+            let stride = video_frame.plane_stride()[0] as usize;
+
+            let data = match video_frame.plane_data(0) {
+                Ok(plane) => {
+                    let mut rgba = vec![0u8; (width * height * 4) as usize];
+                    let row_bytes = (width * 4) as usize;
+                    let mut dst_offset = 0usize;
+                    for src_row in plane.chunks(stride).take(height as usize) {
+                        let copy_len = row_bytes.min(src_row.len());
+                        rgba[dst_offset..dst_offset + copy_len]
+                            .copy_from_slice(&src_row[..copy_len]);
+                        dst_offset += row_bytes;
+                    }
+                    rgba
+                }
+                Err(err) => {
+                    error!("Failed to access plane data: {}", err);
+                    return;
+                }
+            };
+
+            let pts = video_frame
+                .buffer()
+                .pts()
+                .unwrap_or_else(|| gst::ClockTime::from_nseconds(0))
+                .nseconds();
+
+            let colorimetry = extract_colorimetry_from_caps(&caps);
+
+            let frame = VideoFrame {
+                stream_id,
+                width,
+                height,
+                format: "RGBA".to_string(),
+                pts,
+                data,
+                is_dmabuf: false,
+                colorimetry,
+            };
+
+            if let Err(e) = frame_sender.send(frame) {
+                error!("Failed to send video frame: {}", e);
             }
         }
     }
@@ -310,10 +382,8 @@ impl VideoDecoder {
     /// Seek to position
     pub fn seek(&self, position_ns: u64) -> Result<(), Box<dyn std::error::Error>> {
         let position = gst::ClockTime::from_nseconds(position_ns);
-        self.pipeline.seek_simple(
-            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-            position,
-        )?;
+        self.pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, position)?;
         debug!("Seeked stream {} to {} ns", self.stream_id.0, position_ns);
         Ok(())
     }
@@ -342,7 +412,6 @@ impl VideoDecoder {
         // For now, return None as this is not critical for initial functionality
         None
     }
-
 }
 
 impl Drop for VideoDecoder {
@@ -368,7 +437,10 @@ impl HardwareVideoDecoder {
             VideoDecoder::new(stream_id, file_path)?
         };
 
-        info!("Created hardware decoder for stream {} (VA-API: {})", stream_id.0, vaapi_available);
+        info!(
+            "Created hardware decoder for stream {} (VA-API: {})",
+            stream_id.0, vaapi_available
+        );
 
         Ok(Self {
             decoder,
@@ -377,7 +449,10 @@ impl HardwareVideoDecoder {
     }
 
     /// Create VA-API accelerated decoder
-    fn create_vaapi_decoder(stream_id: StreamId, file_path: &str) -> Result<VideoDecoder, Box<dyn std::error::Error>> {
+    fn create_vaapi_decoder(
+        stream_id: StreamId,
+        file_path: &str,
+    ) -> Result<VideoDecoder, Box<dyn std::error::Error>> {
         let (frame_sender, frame_receiver) = mpsc::channel();
 
         let pipeline = gst::Pipeline::new();
@@ -447,7 +522,7 @@ impl HardwareVideoDecoder {
                     Self::handle_hw_sample(appsink, stream_id_clone, &frame_sender_clone);
                     Ok(gst::FlowSuccess::Ok)
                 })
-                .build()
+                .build(),
         );
 
         let decoder = VideoDecoder {
@@ -473,7 +548,10 @@ impl HardwareVideoDecoder {
                     if let Some(structure) = caps.structure(0) {
                         let width = structure.get::<i32>("width").unwrap_or(1920) as u32;
                         let height = structure.get::<i32>("height").unwrap_or(1080) as u32;
-                        let format = structure.get::<&str>("format").unwrap_or("NV12").to_string();
+                        let format = structure
+                            .get::<&str>("format")
+                            .unwrap_or("NV12")
+                            .to_string();
 
                         // Extract colorimetry from caps
                         let colorimetry = extract_colorimetry_from_caps(caps);
@@ -483,19 +561,24 @@ impl HardwareVideoDecoder {
                         // For now, assume DMA-BUF if we have the right caps structure
                         let is_dmabuf = false; // Placeholder - will be true when DMA-BUF is properly detected
 
-                        let pts = buffer.pts().unwrap_or(gst::ClockTime::from_nseconds(0)).nseconds();
+                        let pts = buffer
+                            .pts()
+                            .unwrap_or(gst::ClockTime::from_nseconds(0))
+                            .nseconds();
 
                         // Handle DMA-BUF vs system memory
                         let data = if is_dmabuf {
                             // TODO: Implement DMA-BUF FD extraction when API is available
                             // For now, fall back to system memory
                             warn!("DMA-BUF detected but FD extraction not implemented - falling back to copy");
-                            buffer.map_readable()
+                            buffer
+                                .map_readable()
                                 .map(|map| map.as_slice().to_vec())
                                 .unwrap_or_else(|_| Vec::new())
                         } else {
                             // System memory: copy the data
-                            buffer.map_readable()
+                            buffer
+                                .map_readable()
                                 .map(|map| map.as_slice().to_vec())
                                 .unwrap_or_else(|_| Vec::new())
                         };
@@ -521,17 +604,35 @@ impl HardwareVideoDecoder {
     }
 
     /// Delegate methods to inner decoder
-    pub fn play(&self) -> Result<(), Box<dyn std::error::Error>> { self.decoder.play() }
-    pub fn pause(&self) -> Result<(), Box<dyn std::error::Error>> { self.decoder.pause() }
-    pub fn stop(&self) -> Result<(), Box<dyn std::error::Error>> { self.decoder.stop() }
-    pub fn seek(&self, position_ns: u64) -> Result<(), Box<dyn std::error::Error>> { self.decoder.seek(position_ns) }
-    pub fn try_recv_frame(&self) -> Option<VideoFrame> { self.decoder.try_recv_frame() }
-    pub fn state(&self) -> gst::State { self.decoder.state() }
-    pub fn duration(&self) -> Option<u64> { self.decoder.duration() }
-    pub fn position(&self) -> Option<u64> { self.decoder.position() }
+    pub fn play(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.play()
+    }
+    pub fn pause(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.pause()
+    }
+    pub fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.stop()
+    }
+    pub fn seek(&self, position_ns: u64) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.seek(position_ns)
+    }
+    pub fn try_recv_frame(&self) -> Option<VideoFrame> {
+        self.decoder.try_recv_frame()
+    }
+    pub fn state(&self) -> gst::State {
+        self.decoder.state()
+    }
+    pub fn duration(&self) -> Option<u64> {
+        self.decoder.duration()
+    }
+    pub fn position(&self) -> Option<u64> {
+        self.decoder.position()
+    }
 
     /// Check if hardware acceleration is available
-    pub fn is_hardware_accelerated(&self) -> bool { self.vaapi_available }
+    pub fn is_hardware_accelerated(&self) -> bool {
+        self.vaapi_available
+    }
 }
 
 /// Media manager for coordinating multiple video streams
@@ -547,10 +648,17 @@ impl MediaManager {
     }
 
     /// Load a video file and create decoder
-    pub fn load_video(&mut self, stream_id: StreamId, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load_video(
+        &mut self,
+        stream_id: StreamId,
+        file_path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let decoder = HardwareVideoDecoder::new(stream_id, file_path)?;
         self.decoders.insert(stream_id, decoder);
-        info!("Loaded video file '{}' for stream {}", file_path, stream_id.0);
+        info!(
+            "Loaded video file '{}' for stream {}",
+            file_path, stream_id.0
+        );
         Ok(())
     }
 
@@ -575,7 +683,11 @@ impl MediaManager {
     /// Get hardware acceleration status summary
     pub fn hardware_status(&self) -> (usize, usize) {
         let total = self.decoders.len();
-        let hw_accelerated = self.decoders.values().filter(|d| d.is_hardware_accelerated()).count();
+        let hw_accelerated = self
+            .decoders
+            .values()
+            .filter(|d| d.is_hardware_accelerated())
+            .count();
         (hw_accelerated, total)
     }
 }
@@ -591,7 +703,10 @@ mod tests {
         match init() {
             Ok(_) => assert!(true),
             Err(e) => {
-                println!("GStreamer init failed (expected in some environments): {}", e);
+                println!(
+                    "GStreamer init failed (expected in some environments): {}",
+                    e
+                );
                 assert!(true); // Don't fail test for missing GStreamer
             }
         }

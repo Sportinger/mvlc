@@ -3,8 +3,8 @@
 //! Placeholder rendering implementation. Will be replaced with
 //! full Vulkan/libplacebo rendering pipeline.
 
-use tracing::{debug, info, warn};
 use crate::VulkanRenderer;
+use tracing::{debug, info, warn};
 
 /// Renderer trait for different rendering backends
 pub trait RendererBackend {

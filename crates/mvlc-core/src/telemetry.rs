@@ -3,8 +3,8 @@
 //! Provides structured logging and metrics collection for performance monitoring,
 //! debugging, and optimization. Outputs NDJSON events for analysis.
 
-use serde::{Deserialize, Serialize};
 use crate::time::Time;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 

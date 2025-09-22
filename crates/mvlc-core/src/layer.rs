@@ -3,8 +3,8 @@
 //! Layers represent individual video streams in the composition canvas.
 //! Each layer has its own transform, opacity, and other properties.
 
-use serde::{Deserialize, Serialize};
 use crate::{time::Time, StreamId};
+use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a layer
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -65,12 +65,12 @@ impl Default for Transform {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GizmoHandle {
     None,
-    Move,           // Move the entire layer
+    Move, // Move the entire layer
     ScaleTopLeft,
     ScaleTopRight,
     ScaleBottomLeft,
     ScaleBottomRight,
-    Rotate,         // Rotate handle
+    Rotate, // Rotate handle
 }
 
 /// Layer properties for video composition
@@ -204,9 +204,7 @@ impl Layer {
         let sin = self.transform.rotation.sin();
 
         // Calculate corners
-        let corners = [
-            [-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]
-        ];
+        let corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
 
         let mut min_x = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
@@ -234,12 +232,17 @@ impl Layer {
     /// Check if a point is inside this layer's bounds
     pub fn contains_point(&self, point: [f32; 2], width: f32, height: f32) -> bool {
         let (min, max) = self.bounds(width, height);
-        point[0] >= min[0] && point[0] <= max[0] &&
-        point[1] >= min[1] && point[1] <= max[1]
+        point[0] >= min[0] && point[0] <= max[0] && point[1] >= min[1] && point[1] <= max[1]
     }
 
     /// Get gizmo handle at a specific point
-    pub fn gizmo_handle_at(&self, point: [f32; 2], width: f32, height: f32, handle_size: f32) -> GizmoHandle {
+    pub fn gizmo_handle_at(
+        &self,
+        point: [f32; 2],
+        width: f32,
+        height: f32,
+        handle_size: f32,
+    ) -> GizmoHandle {
         if !self.selected || !self.gizmo_visible {
             return GizmoHandle::None;
         }
@@ -249,8 +252,7 @@ impl Layer {
         let center_y = self.transform.translation[1];
         let handle_y = center_y - height * self.transform.scale[1] * 0.5 - handle_size;
 
-        if (point[0] - center_x).abs() < handle_size &&
-           (point[1] - handle_y).abs() < handle_size {
+        if (point[0] - center_x).abs() < handle_size && (point[1] - handle_y).abs() < handle_size {
             return GizmoHandle::Rotate;
         }
 
@@ -259,15 +261,30 @@ impl Layer {
         let half_h = height * self.transform.scale[1] * 0.5;
 
         let handles = [
-            (center_x - half_w, center_y - half_h, GizmoHandle::ScaleTopLeft),
-            (center_x + half_w, center_y - half_h, GizmoHandle::ScaleTopRight),
-            (center_x - half_w, center_y + half_h, GizmoHandle::ScaleBottomLeft),
-            (center_x + half_w, center_y + half_h, GizmoHandle::ScaleBottomRight),
+            (
+                center_x - half_w,
+                center_y - half_h,
+                GizmoHandle::ScaleTopLeft,
+            ),
+            (
+                center_x + half_w,
+                center_y - half_h,
+                GizmoHandle::ScaleTopRight,
+            ),
+            (
+                center_x - half_w,
+                center_y + half_h,
+                GizmoHandle::ScaleBottomLeft,
+            ),
+            (
+                center_x + half_w,
+                center_y + half_h,
+                GizmoHandle::ScaleBottomRight,
+            ),
         ];
 
         for (hx, hy, handle) in handles {
-            if (point[0] - hx).abs() < handle_size &&
-               (point[1] - hy).abs() < handle_size {
+            if (point[0] - hx).abs() < handle_size && (point[1] - hy).abs() < handle_size {
                 return handle;
             }
         }
@@ -401,7 +418,8 @@ impl LayerStack {
 
     /// Get all active stream IDs
     pub fn active_streams(&self) -> impl Iterator<Item = StreamId> + '_ {
-        self.active_video_layers().filter_map(|layer| layer.stream_id)
+        self.active_video_layers()
+            .filter_map(|layer| layer.stream_id)
     }
 
     /// Count layers with active streams
@@ -411,12 +429,16 @@ impl LayerStack {
 
     /// Get layer by stream ID
     pub fn get_layer_by_stream(&self, stream_id: StreamId) -> Option<&Layer> {
-        self.layers.iter().find(|layer| layer.stream_id == Some(stream_id))
+        self.layers
+            .iter()
+            .find(|layer| layer.stream_id == Some(stream_id))
     }
 
     /// Get layer by stream ID mutably
     pub fn get_layer_by_stream_mut(&mut self, stream_id: StreamId) -> Option<&mut Layer> {
-        self.layers.iter_mut().find(|layer| layer.stream_id == Some(stream_id))
+        self.layers
+            .iter_mut()
+            .find(|layer| layer.stream_id == Some(stream_id))
     }
 
     /// Associate a layer with a stream
@@ -440,7 +462,12 @@ impl LayerStack {
     }
 
     /// Find layer at canvas position
-    pub fn layer_at_position(&self, position: [f32; 2], canvas_width: f32, canvas_height: f32) -> Option<&Layer> {
+    pub fn layer_at_position(
+        &self,
+        position: [f32; 2],
+        canvas_width: f32,
+        canvas_height: f32,
+    ) -> Option<&Layer> {
         // Check in reverse render order (front to back) for hit testing
         for layer in self.reverse_render_order() {
             if layer.visible && layer.contains_point(position, canvas_width, canvas_height) {
@@ -451,7 +478,13 @@ impl LayerStack {
     }
 
     /// Find gizmo handle at canvas position
-    pub fn gizmo_handle_at_position(&self, position: [f32; 2], canvas_width: f32, canvas_height: f32, handle_size: f32) -> (Option<LayerId>, GizmoHandle) {
+    pub fn gizmo_handle_at_position(
+        &self,
+        position: [f32; 2],
+        canvas_width: f32,
+        canvas_height: f32,
+        handle_size: f32,
+    ) -> (Option<LayerId>, GizmoHandle) {
         if let Some(layer) = self.selected_layer() {
             let handle = layer.gizmo_handle_at(position, canvas_width, canvas_height, handle_size);
             if handle != GizmoHandle::None {

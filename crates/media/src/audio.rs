@@ -5,9 +5,9 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
+use mvlc_core::{Clock, Time};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use mvlc_core::{Clock, Time};
 use tracing::{debug, error, info, warn};
 
 /// Audio master clock that provides timing based on audio samples played
@@ -104,14 +104,16 @@ impl AudioOutput {
         let mut supported_configs = device.supported_output_configs()?;
         let supported_config = supported_configs
             .find(|c| {
-                c.sample_format() == SampleFormat::F32 &&
-                c.channels() == config.channels &&
-                c.min_sample_rate().0 <= config.sample_rate &&
-                c.max_sample_rate().0 >= config.sample_rate
+                c.sample_format() == SampleFormat::F32
+                    && c.channels() == config.channels
+                    && c.min_sample_rate().0 <= config.sample_rate
+                    && c.max_sample_rate().0 >= config.sample_rate
             })
             .ok_or("No suitable audio output config found")?;
 
-        let stream_config: StreamConfig = supported_config.with_sample_rate(cpal::SampleRate(config.sample_rate)).into();
+        let stream_config: StreamConfig = supported_config
+            .with_sample_rate(cpal::SampleRate(config.sample_rate))
+            .into();
 
         let master_clock = AudioMasterClock::new(config.sample_rate);
 
@@ -138,7 +140,10 @@ impl AudioOutput {
 
         stream.play()?;
 
-        info!("Audio output initialized with {} Hz, {} channels", config.sample_rate, config.channels);
+        info!(
+            "Audio output initialized with {} Hz, {} channels",
+            config.sample_rate, config.channels
+        );
 
         Ok(Self {
             _stream: stream,

@@ -3,9 +3,9 @@
 //! Provides hardware-accelerated rendering with zero-copy DMA-BUF imports
 //! from GStreamer VA-API hardware decoding.
 
+use anyhow::{Context, Result};
 use ash::vk;
 use tracing::{info, warn};
-use anyhow::{Result, Context};
 
 /// DMA-BUF information for external memory import
 #[derive(Debug, Clone)]
@@ -25,13 +25,17 @@ impl VulkanRenderer {
         info!("Initializing Vulkan renderer with DMA-BUF support");
         warn!("Vulkan renderer is placeholder - full implementation pending");
 
-        Ok(Self {
-            initialized: false,
-        })
+        Ok(Self { initialized: false })
     }
 
     /// Import DMA-BUF as Vulkan image (placeholder)
-    pub fn import_dmabuf_image(&mut self, _dma_buf: &crate::DmaBufInfo, _width: u32, _height: u32, _format: vk::Format) -> Result<vk::Image> {
+    pub fn import_dmabuf_image(
+        &mut self,
+        _dma_buf: &crate::DmaBufInfo,
+        _width: u32,
+        _height: u32,
+        _format: vk::Format,
+    ) -> Result<vk::Image> {
         warn!("DMA-BUF import not implemented yet");
         Err(anyhow::anyhow!("DMA-BUF import not implemented"))
     }

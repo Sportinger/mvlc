@@ -3,9 +3,9 @@
 //! Handles saving and loading project state, including layers,
 //! settings, and metadata.
 
-use serde::{Deserialize, Serialize};
 use crate::layer::LayerStack;
 use crate::time::Time;
+use serde::{Deserialize, Serialize};
 
 /// Project metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,8 +73,8 @@ impl Project {
 /// Project serialization/deserialization
 pub mod io {
     use super::*;
-    use std::path::Path;
     use std::fs;
+    use std::path::Path;
     use thiserror::Error;
 
     #[derive(Error, Debug)]

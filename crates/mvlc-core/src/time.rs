@@ -3,8 +3,8 @@
 //! Provides high-precision timing for video playback, frame synchronization,
 //! and A/V sync management.
 
-use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 /// A high-precision timestamp representing media time in nanoseconds
 ///
@@ -126,7 +126,10 @@ pub struct TimeRange {
 
 impl TimeRange {
     pub fn new(start: Time, end: Time) -> Self {
-        assert!(start <= end, "Start time must be before or equal to end time");
+        assert!(
+            start <= end,
+            "Start time must be before or equal to end time"
+        );
         Self { start, end }
     }
 
@@ -207,6 +210,7 @@ impl FrameTiming {
     }
 
     pub fn presentation_error(&self) -> Option<Time> {
-        self.actual_presentation_time.map(|actual| actual.sub(self.presentation_time))
+        self.actual_presentation_time
+            .map(|actual| actual.sub(self.presentation_time))
     }
 }
