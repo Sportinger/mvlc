@@ -20,6 +20,9 @@ vk-mem.workspace = true
 winit.workspace = true
 ash-window = "0.12"
 raw-window-handle = "0.5"
+wgpu.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
 
 # Color management and processing (optional)
 # libplacebo = "0.7"

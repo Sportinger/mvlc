@@ -7,7 +7,12 @@
 use anyhow::{anyhow, Result};
 use ash::{vk, Entry};
 use ash_window::enumerate_required_extensions;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle};
+use raw_window_handle::{
+    HasRawDisplayHandle,
+    HasRawWindowHandle,
+    RawDisplayHandle,
+    RawWindowHandle,
+};
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::time::Duration;
