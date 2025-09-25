@@ -3,11 +3,13 @@
 //! Provides hardware-accelerated video decoding using VA-API
 //! with DMA-BUF export for zero-copy rendering.
 
+use crate::audio::AudioSampleSink;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use mvlc_core::StreamId;
+use std::convert::TryInto;
 use std::sync::mpsc::{self, Receiver, Sender};
 use tracing::{debug, error, info, warn};
 
@@ -165,6 +167,219 @@ impl VideoFrame {
         } else {
             self.data.len()
         }
+    }
+}
+
+struct AudioDecoder {
+    pipeline: gst::Pipeline,
+    appsink: gst_app::AppSink,
+    sink: AudioSampleSink,
+    stream_id: StreamId,
+}
+
+impl AudioDecoder {
+    fn new(
+        stream_id: StreamId,
+        file_path: &str,
+        sink: AudioSampleSink,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let pipeline = gst::Pipeline::new();
+
+        let filesrc = gst::ElementFactory::make("filesrc")
+            .name("audio_source")
+            .property("location", file_path)
+            .build()?;
+
+        let decodebin = gst::ElementFactory::make("decodebin")
+            .name("audio_decodebin")
+            .build()?;
+
+        let queue = gst::ElementFactory::make("queue")
+            .name("audio_queue")
+            .build()?;
+
+        let audioconvert = gst::ElementFactory::make("audioconvert")
+            .name("audio_convert")
+            .build()?;
+
+        let audioresample = gst::ElementFactory::make("audio_resample")
+            .name("audio_resample")
+            .build()?;
+
+        let audio_caps = gst::Caps::builder("audio/x-raw")
+            .field("format", &"F32LE")
+            .field("channels", &(sink.channels() as i32))
+            .field("rate", &(sink.sample_rate() as i32))
+            .build();
+
+        let capsfilter = gst::ElementFactory::make("capsfilter")
+            .name("audio_capsfilter")
+            .property("caps", &audio_caps)
+            .build()?;
+
+        let appsink = gst_app::AppSink::builder()
+            .name("audio_appsink")
+            .caps(&audio_caps)
+            .build();
+
+        pipeline.add_many(&[
+            &filesrc,
+            &decodebin,
+            &queue,
+            &audioconvert,
+            &audioresample,
+            &capsfilter,
+        ])?;
+        pipeline.add(&appsink)?;
+
+        filesrc.link(&decodebin)?;
+        queue.link(&audioconvert)?;
+        audioconvert.link(&audioresample)?;
+        audioresample.link(&capsfilter)?;
+        capsfilter.link(&appsink)?;
+
+        let queue_weak = queue.downgrade();
+        decodebin.connect_pad_added(move |_dbin, src_pad| {
+            let Some(queue) = queue_weak.upgrade() else {
+                warn!("Audio queue dropped before linking");
+                return;
+            };
+
+            let caps = src_pad
+                .current_caps()
+                .or_else(|| Some(src_pad.query_caps(None)));
+
+            let Some(caps) = caps else {
+                warn!("Audio pad without caps");
+                return;
+            };
+
+            let Some(structure) = caps.structure(0) else {
+                warn!("Audio pad missing structure");
+                return;
+            };
+
+            if !structure.name().starts_with("audio/") {
+                return;
+            }
+
+            let sink_pad = match queue.static_pad("sink") {
+                Some(pad) => pad,
+                None => {
+                    error!("Audio queue sink pad missing");
+                    return;
+                }
+            };
+
+            if sink_pad.is_linked() {
+                debug!("Audio queue already linked");
+                return;
+            }
+
+            if let Err(err) = src_pad.link(&sink_pad) {
+                error!("Failed to link audio pad: {}", err);
+            } else {
+                debug!("Linked audio pad for stream {}", stream_id.0);
+            }
+        });
+
+        let sink_clone = sink.clone();
+        appsink.set_callbacks(
+            gst_app::AppSinkCallbacks::builder()
+                .new_sample(move |appsink| {
+                    AudioDecoder::handle_audio_sample(appsink, &sink_clone);
+                    Ok(gst::FlowSuccess::Ok)
+                })
+                .build(),
+        );
+
+        Ok(Self {
+            pipeline,
+            appsink,
+            sink,
+            stream_id,
+        })
+    }
+
+    fn play(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.pipeline.set_state(gst::State::Playing)?;
+        Ok(())
+    }
+
+    fn pause(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.pipeline.set_state(gst::State::Paused)?;
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.pipeline.set_state(gst::State::Null)?;
+        self.sink.clear();
+        Ok(())
+    }
+
+    fn seek(&self, position_ns: u64) -> Result<(), Box<dyn std::error::Error>> {
+        let position = gst::ClockTime::from_nseconds(position_ns);
+        self.pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, position)?;
+        self.sink.clear();
+        Ok(())
+    }
+
+    fn state(&self) -> gst::State {
+        let (_, current, _) = self.pipeline.state(gst::ClockTime::ZERO);
+        current
+    }
+
+    fn duration(&self) -> Option<u64> {
+        match self.pipeline.query_duration::<gst::ClockTime>() {
+            Some(duration) if duration.is_some() => Some(duration.nseconds()),
+            _ => None,
+        }
+    }
+
+    fn position(&self) -> Option<u64> {
+        match self.pipeline.query_position::<gst::ClockTime>() {
+            Some(position) if position.is_some() => Some(position.nseconds()),
+            _ => None,
+        }
+    }
+
+    fn is_playing(&self) -> bool {
+        matches!(self.state(), gst::State::Playing)
+    }
+
+    fn handle_audio_sample(appsink: &gst_app::AppSink, sink: &AudioSampleSink) {
+        if let Ok(sample) = appsink.pull_sample() {
+            if let Some(buffer) = sample.buffer() {
+                match buffer.map_readable() {
+                    Ok(map) => {
+                        let bytes = map.as_slice();
+                        if bytes.is_empty() {
+                            return;
+                        }
+
+                        let mut pcm = Vec::with_capacity(bytes.len() / std::mem::size_of::<f32>());
+                        for chunk in bytes.chunks_exact(4) {
+                            let arr: [u8; 4] = chunk.try_into().expect("Invalid PCM chunk size");
+                            pcm.push(f32::from_le_bytes(arr));
+                        }
+
+                        if !pcm.is_empty() {
+                            sink.push_samples(&pcm);
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to map audio buffer: {}", err);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Drop for AudioDecoder {
+    fn drop(&mut self) {
+        let _ = self.stop();
     }
 }
 
@@ -395,22 +610,24 @@ impl VideoDecoder {
 
     /// Get the current pipeline state
     pub fn state(&self) -> gst::State {
-        let (_, current, _) = self.pipeline.state(gst::ClockTime::from_seconds(1));
+        let (_, current, _) = self.pipeline.state(gst::ClockTime::ZERO);
         current
     }
 
     /// Get stream duration in nanoseconds
     pub fn duration(&self) -> Option<u64> {
-        // TODO: Implement proper duration querying
-        // For now, return None as this is not critical for initial functionality
-        None
+        match self.pipeline.query_duration::<gst::ClockTime>() {
+            Some(duration) if duration.is_some() => Some(duration.nseconds()),
+            _ => None,
+        }
     }
 
     /// Get current position in nanoseconds
     pub fn position(&self) -> Option<u64> {
-        // TODO: Implement proper position querying
-        // For now, return None as this is not critical for initial functionality
-        None
+        match self.pipeline.query_position::<gst::ClockTime>() {
+            Some(position) if position.is_some() => Some(position.nseconds()),
+            _ => None,
+        }
     }
 }
 
@@ -424,17 +641,36 @@ impl Drop for VideoDecoder {
 pub struct HardwareVideoDecoder {
     decoder: VideoDecoder,
     vaapi_available: bool,
+    audio: Option<AudioDecoder>,
 }
 
 impl HardwareVideoDecoder {
     /// Create hardware-accelerated decoder with VA-API fallback
-    pub fn new(stream_id: StreamId, file_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        stream_id: StreamId,
+        file_path: &str,
+        audio_sink: Option<AudioSampleSink>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let vaapi_available = check_vaapi_support();
 
         let decoder = if vaapi_available {
             Self::create_vaapi_decoder(stream_id, file_path)?
         } else {
             VideoDecoder::new(stream_id, file_path)?
+        };
+
+        let audio = match audio_sink {
+            Some(sink) => match AudioDecoder::new(stream_id, file_path, sink.clone()) {
+                Ok(audio_decoder) => Some(audio_decoder),
+                Err(err) => {
+                    warn!(
+                        "Failed to initialize audio decoder for stream {}: {}",
+                        stream_id.0, err
+                    );
+                    None
+                }
+            },
+            None => None,
         };
 
         info!(
@@ -445,6 +681,7 @@ impl HardwareVideoDecoder {
         Ok(Self {
             decoder,
             vaapi_available,
+            audio,
         })
     }
 
@@ -605,16 +842,32 @@ impl HardwareVideoDecoder {
 
     /// Delegate methods to inner decoder
     pub fn play(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.decoder.play()
+        self.decoder.play()?;
+        if let Some(audio) = &self.audio {
+            audio.play()?;
+        }
+        Ok(())
     }
     pub fn pause(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.decoder.pause()
+        self.decoder.pause()?;
+        if let Some(audio) = &self.audio {
+            audio.pause()?;
+        }
+        Ok(())
     }
     pub fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.decoder.stop()
+        self.decoder.stop()?;
+        if let Some(audio) = &self.audio {
+            audio.stop()?;
+        }
+        Ok(())
     }
     pub fn seek(&self, position_ns: u64) -> Result<(), Box<dyn std::error::Error>> {
-        self.decoder.seek(position_ns)
+        self.decoder.seek(position_ns)?;
+        if let Some(audio) = &self.audio {
+            audio.seek(position_ns)?;
+        }
+        Ok(())
     }
     pub fn try_recv_frame(&self) -> Option<VideoFrame> {
         self.decoder.try_recv_frame()
@@ -623,15 +876,30 @@ impl HardwareVideoDecoder {
         self.decoder.state()
     }
     pub fn duration(&self) -> Option<u64> {
-        self.decoder.duration()
+        self.decoder
+            .duration()
+            .or_else(|| self.audio.as_ref().and_then(|audio| audio.duration()))
     }
     pub fn position(&self) -> Option<u64> {
-        self.decoder.position()
+        self.decoder
+            .position()
+            .or_else(|| self.audio.as_ref().and_then(|audio| audio.position()))
     }
 
     /// Check if hardware acceleration is available
     pub fn is_hardware_accelerated(&self) -> bool {
         self.vaapi_available
+    }
+
+    /// Check whether the pipeline is currently running in the playing state
+    pub fn is_playing(&self) -> bool {
+        let video_playing = matches!(self.state(), gst::State::Playing);
+        let audio_playing = self
+            .audio
+            .as_ref()
+            .map(|audio| audio.is_playing())
+            .unwrap_or(false);
+        video_playing || audio_playing
     }
 }
 
@@ -652,8 +920,9 @@ impl MediaManager {
         &mut self,
         stream_id: StreamId,
         file_path: &str,
+        audio_sink: Option<AudioSampleSink>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let decoder = HardwareVideoDecoder::new(stream_id, file_path)?;
+        let decoder = HardwareVideoDecoder::new(stream_id, file_path, audio_sink)?;
         self.decoders.insert(stream_id, decoder);
         info!(
             "Loaded video file '{}' for stream {}",

@@ -61,10 +61,10 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 * [x] Basic Renderer (Placeholder)
 * [x] VA-API Decoder in Pipeline
-* [x] Negotiation `video/x-raw(memory:DMABuf)`
-* [x] DMABUF‑Import in Vulkan (External Memory)
-* [x] Zero‑Copy Pfaderkennung + UI‑Farbcodes
-* [x] Metrik: Upload‑Bytes≈0 im Optimum
+* [ ] Negotiation `video/x-raw(memory:DMABuf)`
+* [ ] DMABUF‑Import in Vulkan (External Memory)
+* [ ] Zero‑Copy Pfaderkennung + UI‑Farbcodes
+* [ ] Metrik: Upload‑Bytes≈0 im Optimum
 * [ ] Fallback: SW‑Decode Pfad stabil
 
 ---

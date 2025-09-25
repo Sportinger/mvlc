@@ -3,7 +3,7 @@ use crate::badges::BadgeState;
 use crate::transport::format_timecode;
 use egui::{self, Layout};
 use mvlc_core::Layer;
-use mvlc_media::{check_dmabuf_support, check_vaapi_support};
+use mvlc_media::check_vaapi_support;
 
 pub fn show_ui(ctx: &egui::Context, app_state: &mut AppState) {
     update_badges_for_state(app_state);
@@ -31,7 +31,7 @@ pub fn show_ui(ctx: &egui::Context, app_state: &mut AppState) {
                 let duration = app_state.transport.duration_seconds;
 
                 if ui.button("⏮ Prev").clicked() {
-                    app_state.transport.position_seconds = 0.0;
+                    app_state.seek_all(0.0);
                 }
 
                 let play_label = if app_state.transport.is_playing {
@@ -39,36 +39,39 @@ pub fn show_ui(ctx: &egui::Context, app_state: &mut AppState) {
                 } else {
                     "▶ Play"
                 };
+
                 if ui.button(play_label).clicked() {
-                    app_state.transport.is_playing = !app_state.transport.is_playing;
+                    if app_state.transport.is_playing {
+                        app_state.pause_all();
+                    } else {
+                        app_state.play_all();
+                    }
                 }
 
                 if ui.button("⏹ Stop").clicked() {
-                    app_state.transport.is_playing = false;
-                    app_state.transport.position_seconds = 0.0;
+                    app_state.stop_all();
                 }
 
-                if ui.button("⏭ Next").clicked() {
-                    app_state.transport.position_seconds = duration.max(0.0);
+                if ui.button("⏭ Next").clicked() && duration > 0.0 {
+                    app_state.seek_all(duration);
                 }
 
                 ui.add_space(16.0);
 
-                let range = 0.0..=duration.max(1.0);
-                let slider = egui::Slider::new(&mut app_state.transport.position_seconds, range)
+                let mut position = app_state.transport.position_seconds;
+                let slider_range = 0.0..=duration.max(0.0);
+                let slider = egui::Slider::new(&mut position, slider_range)
                     .show_value(false)
                     .text("Timeline");
 
                 if duration <= 0.0 {
                     ui.add_enabled(false, slider);
                 } else {
-                    ui.add(slider);
+                    let response = ui.add(slider);
+                    if response.changed() {
+                        app_state.seek_all(position);
+                    }
                 }
-
-                app_state.transport.position_seconds = app_state
-                    .transport
-                    .position_seconds
-                    .clamp(0.0, duration.max(0.0));
 
                 ui.add_space(12.0);
 
@@ -338,19 +341,24 @@ fn update_badges_for_state(app_state: &mut AppState) {
         .any(|layer| layer.media_path.is_some());
 
     let vaapi_available = check_vaapi_support();
+    let hardware_active = app_state
+        .video_layers
+        .values()
+        .any(|state| state.is_hardware_accelerated());
 
     if let Some(decode_badge) = app_state.badges.iter_mut().find(|b| b.name == "Decode") {
-        if has_video_files {
-            if vaapi_available {
-                decode_badge.value = "VA-API (Ready)".to_string();
-                decode_badge.state = BadgeState::Optimal;
-            } else {
-                decode_badge.value = "SW (File Ready)".to_string();
-                decode_badge.state = BadgeState::Partial;
-            }
+        if hardware_active {
+            decode_badge.value = "VA-API (Active)".to_string();
+            decode_badge.state = BadgeState::Optimal;
+        } else if has_video_files && vaapi_available {
+            decode_badge.value = "VA-API (Available)".to_string();
+            decode_badge.state = BadgeState::Partial;
+        } else if has_video_files {
+            decode_badge.value = "Software Decode".to_string();
+            decode_badge.state = BadgeState::Fallback;
         } else if vaapi_available {
             decode_badge.value = "VA-API".to_string();
-            decode_badge.state = BadgeState::Optimal;
+            decode_badge.state = BadgeState::Partial;
         } else {
             decode_badge.value = "SW".to_string();
             decode_badge.state = BadgeState::Fallback;
@@ -378,18 +386,19 @@ fn update_badges_for_state(app_state: &mut AppState) {
         }
     }
 
-    let dmabuf_available = check_dmabuf_support();
+    let global_perf = app_state.performance_monitor.global_summary();
     if let Some(transfer_badge) = app_state.badges.iter_mut().find(|b| b.name == "Transfer") {
-        if dmabuf_available {
-            transfer_badge.value = "Zero-Copy(DMA-BUF)".to_string();
+        if global_perf.is_fully_zero_copy && global_perf.avg_upload_bytes_per_frame < 1024.0 {
+            transfer_badge.value = "Zero-Copy".to_string();
             transfer_badge.state = BadgeState::Optimal;
-        } else {
-            transfer_badge.value = "Staged(Host->GPU)".to_string();
+        } else if global_perf.zero_copy_streams > 0 {
+            transfer_badge.value = "Mixed Upload".to_string();
             transfer_badge.state = BadgeState::Partial;
+        } else {
+            transfer_badge.value = "Host Upload".to_string();
+            transfer_badge.state = BadgeState::Fallback;
         }
     }
-
-    let global_perf = app_state.performance_monitor.global_summary();
     if let Some(perf_badge) = app_state
         .badges
         .iter_mut()
@@ -407,12 +416,14 @@ fn update_badges_for_state(app_state: &mut AppState) {
     }
 
     if let Some(render_badge) = app_state.badges.iter_mut().find(|b| b.name == "Render") {
-        if app_state.renderer.is_ready() {
-            render_badge.value = "Vulkan(DMA-BUF)".to_string();
+        let using_vulkan = app_state.renderer.as_vulkan().is_some();
+
+        if using_vulkan {
+            render_badge.value = "Vulkan Renderer".to_string();
             render_badge.state = BadgeState::Optimal;
         } else {
             render_badge.value = "Placeholder".to_string();
-            render_badge.state = BadgeState::Partial;
+            render_badge.state = BadgeState::Fallback;
         }
     }
 

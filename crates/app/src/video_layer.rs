@@ -1,16 +1,52 @@
 use egui::TextureId;
 use egui_wgpu::Renderer as EguiWgpuRenderer;
-use mvlc_media::{VideoDecoder, VideoFrame};
+use mvlc_media::{HardwareVideoDecoder, VideoFrame};
 
 /// Runtime state for a video-backed layer
 pub(crate) struct VideoLayerState {
-    decoder: VideoDecoder,
+    decoder: HardwareVideoDecoder,
     gpu: Option<GpuResources>,
 }
 
 impl VideoLayerState {
-    pub fn new(decoder: VideoDecoder) -> Self {
+    pub fn new(decoder: HardwareVideoDecoder) -> Self {
         Self { decoder, gpu: None }
+    }
+
+    pub fn play(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.play()
+    }
+
+    pub fn pause(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.pause()
+    }
+
+    pub fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.stop()
+    }
+
+    pub fn seek(&self, position_ns: u64) -> Result<(), Box<dyn std::error::Error>> {
+        self.decoder.seek(position_ns)
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.decoder.is_playing()
+    }
+
+    pub fn is_hardware_accelerated(&self) -> bool {
+        self.decoder.is_hardware_accelerated()
+    }
+
+    pub fn duration_seconds(&self) -> Option<f32> {
+        self.decoder
+            .duration()
+            .map(|ns| ns as f32 / 1_000_000_000.0f32)
+    }
+
+    pub fn position_seconds(&self) -> Option<f32> {
+        self.decoder
+            .position()
+            .map(|ns| ns as f32 / 1_000_000_000.0f32)
     }
 
     pub fn update_with_latest_frame(

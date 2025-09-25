@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::app_state::AppState;
 use crate::video_layer::VideoLayerState;
 use mvlc_core::StreamId;
-use mvlc_media::VideoDecoder;
+use mvlc_media::HardwareVideoDecoder;
 
 pub fn handle_dropped_file(app_state: &mut AppState, path: &Path) {
     if let Some(extension) = path.extension() {
@@ -24,15 +24,10 @@ pub fn handle_dropped_file(app_state: &mut AppState, path: &Path) {
             let stream_id = StreamId(layer_id.0 as u64);
             let media_path = path.to_string_lossy().to_string();
 
-            let layer_count = app_state.project.layers.layers().len();
-
             if let Some(layer) = app_state.project.layers.get_layer_mut(layer_id) {
                 layer.media_path = Some(media_path.clone());
-                layer.set_position(
-                    (layer_count as f32 - 1.0) * 50.0,
-                    (layer_count as f32 - 1.0) * 30.0,
-                );
-                layer.set_scale(0.8, 0.8);
+                layer.set_position(0.0, 0.0);
+                layer.set_scale(1.0, 1.0);
                 layer.play();
                 layer.set_stream(stream_id);
             }
@@ -43,25 +38,39 @@ pub fn handle_dropped_file(app_state: &mut AppState, path: &Path) {
                     .add_stream(stream_id, audio.master_clock().clone(), 30.0);
             }
 
-            match VideoDecoder::new(stream_id, &media_path) {
+            let autoplay = if app_state.video_layers.is_empty() {
+                if let Some(audio) = &app_state.audio_output {
+                    audio.clear_buffer();
+                }
+                true
+            } else {
+                app_state.transport.is_playing
+            };
+
+            let audio_sink = if app_state.video_layers.is_empty() {
+                app_state
+                    .audio_output
+                    .as_ref()
+                    .map(|audio| audio.sample_sink())
+            } else {
+                None
+            };
+
+            match HardwareVideoDecoder::new(stream_id, &media_path, audio_sink) {
                 Ok(decoder) => {
-                    if let Err(err) = decoder.play() {
-                        tracing::error!("Failed to start decoder for {}: {}", media_path, err);
-                    }
-
-                    let duration_seconds = decoder
-                        .duration()
-                        .map(|ns| ns as f32 / 1_000_000_000.0)
-                        .unwrap_or(120.0);
-
-                    app_state.transport.duration_seconds = duration_seconds;
-                    app_state.transport.position_seconds = 0.0;
-                    app_state.transport.is_playing = true;
-
                     app_state
                         .video_layers_mut()
                         .insert(layer_id, VideoLayerState::new(decoder));
-                    tracing::info!("Decoder started for layer '{}'", layer_name);
+
+                    app_state.schedule_fit_to_view(layer_id);
+
+                    if autoplay {
+                        app_state.play_all();
+                    } else {
+                        app_state.update_transport_from_decoders();
+                    }
+
+                    tracing::info!("Decoder ready for layer '{}'", layer_name);
                 }
                 Err(err) => {
                     tracing::error!("Failed to create decoder for {}: {}", media_path, err);

@@ -187,6 +187,8 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut app_state = AppState::new(window.as_ref());
+    let initial_size = window.inner_size();
+    app_state.canvas_viewport.size = [initial_size.width as f32, initial_size.height as f32];
     let mut graphics_state = pollster::block_on(GraphicsState::new(window.clone()))?;
 
     event_loop.run(move |event, elwt| {
@@ -208,6 +210,7 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                         handle_zoom_input(&mut app_state, delta);
                     }
                     WindowEvent::Resized(size) => {
+                        app_state.canvas_viewport.size = [size.width as f32, size.height as f32];
                         graphics_state.resize(size);
                         window.request_redraw();
                     }
@@ -216,6 +219,8 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                         mut inner_size_writer,
                     } => {
                         let new_size = window.inner_size();
+                        app_state.canvas_viewport.size =
+                            [new_size.width as f32, new_size.height as f32];
                         graphics_state.resize(new_size);
                         if let Err(e) = inner_size_writer.request_inner_size(new_size) {
                             tracing::debug!("Failed to request inner size update: {:?}", e);
@@ -418,6 +423,7 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
                         elwt.exit();
                     }
                     WindowEvent::Resized(size) => {
+                        app_state.canvas_viewport.size = [size.width as f32, size.height as f32];
                         if let Some(vulkan) = renderer.as_vulkan() {
                             if let Err(err) = vulkan.resize(size.width, size.height) {
                                 tracing::warn!("Failed to resize Vulkan renderer: {err:?}");

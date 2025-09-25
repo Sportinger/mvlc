@@ -6,8 +6,9 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use mvlc_core::{Clock, Time};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 /// Audio master clock that provides timing based on audio samples played
@@ -80,6 +81,77 @@ impl Default for AudioConfig {
     }
 }
 
+struct AudioShared {
+    buffer: Mutex<VecDeque<f32>>,
+    capacity: usize,
+}
+
+impl AudioShared {
+    fn push_samples(&self, samples: &[f32]) {
+        if samples.is_empty() {
+            return;
+        }
+
+        let mut buffer = self.buffer.lock().expect("audio buffer mutex poisoned");
+
+        if samples.len() >= self.capacity {
+            buffer.clear();
+            buffer.extend(samples[samples.len() - self.capacity..].iter().copied());
+            return;
+        }
+
+        let required = samples.len();
+        let available = self.capacity.saturating_sub(buffer.len());
+
+        if required > available {
+            let overflow = required - available;
+            for _ in 0..overflow {
+                buffer.pop_front();
+            }
+        }
+
+        buffer.extend(samples.iter().copied());
+    }
+
+    fn pop_samples(&self, dest: &mut [f32]) {
+        let mut buffer = self.buffer.lock().expect("audio buffer mutex poisoned");
+
+        for sample in dest.iter_mut() {
+            *sample = buffer.pop_front().unwrap_or(0.0);
+        }
+    }
+
+    fn clear(&self) {
+        let mut buffer = self.buffer.lock().expect("audio buffer mutex poisoned");
+        buffer.clear();
+    }
+}
+
+#[derive(Clone)]
+pub struct AudioSampleSink {
+    shared: Arc<AudioShared>,
+    sample_rate: u32,
+    channels: u16,
+}
+
+impl AudioSampleSink {
+    pub fn push_samples(&self, samples: &[f32]) {
+        self.shared.push_samples(samples);
+    }
+
+    pub fn clear(&self) {
+        self.shared.clear();
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
+}
+
 /// Audio output stream that generates silence
 ///
 /// Initially outputs silence, but can be extended to play actual audio data.
@@ -87,6 +159,7 @@ pub struct AudioOutput {
     _stream: Stream, // Keep stream alive
     config: AudioConfig,
     master_clock: AudioMasterClock,
+    shared: Arc<AudioShared>,
 }
 
 impl AudioOutput {
@@ -115,22 +188,33 @@ impl AudioOutput {
             .with_sample_rate(cpal::SampleRate(config.sample_rate))
             .into();
 
-        let master_clock = AudioMasterClock::new(config.sample_rate);
+        let effective_config = AudioConfig {
+            sample_rate: stream_config.sample_rate.0,
+            channels: stream_config.channels,
+            buffer_size: config.buffer_size,
+        };
 
-        // Clone master clock for the closure
+        let buffer_capacity =
+            (effective_config.sample_rate as usize * effective_config.channels as usize * 4)
+                .max(effective_config.channels as usize * 1024);
+
+        let shared = Arc::new(AudioShared {
+            buffer: Mutex::new(VecDeque::with_capacity(buffer_capacity)),
+            capacity: buffer_capacity,
+        });
+
+        let master_clock = AudioMasterClock::new(effective_config.sample_rate);
+
         let clock_clone = master_clock.clone();
+        let shared_for_callback = Arc::clone(&shared);
+        let callback_channels = effective_config.channels as usize;
 
         let stream = device.build_output_stream(
             &stream_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // Generate silence (all zeros)
-                for sample in data.iter_mut() {
-                    *sample = 0.0;
-                }
-
-                // Update master clock with samples played
-                let samples = data.len() as u64 / config.channels as u64;
-                clock_clone.add_samples(samples);
+                shared_for_callback.pop_samples(data);
+                let frames = data.len() as u64 / callback_channels as u64;
+                clock_clone.add_samples(frames);
             },
             move |err| {
                 error!("Audio stream error: {}", err);
@@ -142,13 +226,14 @@ impl AudioOutput {
 
         info!(
             "Audio output initialized with {} Hz, {} channels",
-            config.sample_rate, config.channels
+            effective_config.sample_rate, effective_config.channels
         );
 
         Ok(Self {
             _stream: stream,
-            config,
+            config: effective_config,
             master_clock,
+            shared,
         })
     }
 
@@ -170,6 +255,25 @@ impl AudioOutput {
     /// Get the current playback time according to the master clock
     pub fn current_time(&self) -> Time {
         self.master_clock.now()
+    }
+
+    /// Obtain a handle that allows pushing decoded PCM samples into the output queue
+    pub fn sample_sink(&self) -> AudioSampleSink {
+        AudioSampleSink {
+            shared: Arc::clone(&self.shared),
+            sample_rate: self.config.sample_rate,
+            channels: self.config.channels,
+        }
+    }
+
+    /// Enqueue interleaved PCM samples for playback
+    pub fn enqueue_samples(&self, samples: &[f32]) {
+        self.shared.push_samples(samples);
+    }
+
+    /// Clear any queued audio data (useful when seeking)
+    pub fn clear_buffer(&self) {
+        self.shared.clear();
     }
 }
 
