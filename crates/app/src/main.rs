@@ -15,7 +15,7 @@ use egui_wgpu::{Renderer as EguiWgpuRenderer, ScreenDescriptor};
 use egui_winit::State as EguiWinitState;
 use mvlc_media::{check_dmabuf_support, check_vaapi_support, init as init_gstreamer};
 use mvlc_render::{Renderer, VulkanUiBridge};
-use std::sync::Arc;
+use std::{env, sync::Arc};
 use winit::{
     event::{Event, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -387,6 +387,21 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     );
     let mut ui_bridge = VulkanUiBridge::new()?;
 
+    if env::var("MVLC_VULKAN_UI_NATIVE").as_deref() == Ok("1") {
+        if let Some(vulkan) = renderer.as_vulkan() {
+            match ui_bridge.promote_to_native(vulkan) {
+                Ok(()) => tracing::info!("Using Vulkan-native egui backend"),
+                Err(err) => {
+                    tracing::error!(
+                        "Failed to initialize Vulkan-native UI backend, falling back to wgpu: {err:?}"
+                    );
+                }
+            }
+        } else {
+            tracing::warn!("Vulkan renderer unavailable; cannot enable native UI backend");
+        }
+    }
+
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
 
@@ -440,24 +455,13 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
                         app_state.poll_video_frames_headless();
 
                         if let Some(vulkan) = renderer.as_vulkan() {
-                            match ui_bridge.render(&full_output, &paint_jobs, &screen_descriptor) {
-                                Ok(Some(frame)) => {
-                                    if let Err(err) = vulkan.render_rgba_frame(
-                                        &frame.pixels,
-                                        frame.width,
-                                        frame.height,
-                                    ) {
-                                        tracing::error!("Vulkan render failed: {err:?}");
-                                    }
-                                }
-                                Ok(None) => {
-                                    if let Err(err) = vulkan.render_frame() {
-                                        tracing::error!("Vulkan render failed: {err:?}");
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::error!("Failed to render UI off-screen: {err:?}");
-                                }
+                            if let Err(err) = ui_bridge.render(
+                                vulkan,
+                                &full_output,
+                                &paint_jobs,
+                                &screen_descriptor,
+                            ) {
+                                tracing::error!("Failed to render UI: {err:?}");
                             }
                         }
 

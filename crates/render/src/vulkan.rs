@@ -18,7 +18,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 use winit::window::Window;
 
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
+pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct VulkanRenderer {
     entry: Entry,
@@ -55,6 +55,14 @@ struct OverlayBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     capacity: vk::DeviceSize,
+}
+
+pub(crate) struct FrameContext {
+    pub(crate) frame_idx: usize,
+    pub(crate) image_index: u32,
+    pub(crate) command_buffer: vk::CommandBuffer,
+    pub(crate) framebuffer: vk::Framebuffer,
+    pub(crate) extent: vk::Extent2D,
 }
 
 impl OverlayBuffer {
@@ -277,86 +285,17 @@ impl VulkanRenderer {
             self.resize(width, height)?;
         }
 
-        let frame_idx = self.current_frame;
-        self.stage_overlay_pixels(frame_idx, rgba, width, height)?;
-        let overlay_buffer = &self.overlay_buffers[frame_idx];
-
-        let fence = self.in_flight_fences[frame_idx];
-        unsafe {
-            self.device.wait_for_fences(
-                &[fence],
-                true,
-                Duration::from_secs(1).as_nanos() as u64,
-            )?;
-        }
-
-        let (image_index, suboptimal) = unsafe {
-            self.swapchain_loader.acquire_next_image(
-                self.swapchain,
-                Duration::from_millis(500).as_nanos() as u64,
-                self.image_available_semaphores[frame_idx],
-                vk::Fence::null(),
+        self.with_swapchain_frame(vk::PipelineStageFlags::TRANSFER, |renderer, ctx| {
+            renderer.stage_overlay_pixels(ctx.frame_idx, rgba, width, height)?;
+            let overlay_buffer = &renderer.overlay_buffers[ctx.frame_idx];
+            renderer.record_rgba_command_buffer(
+                ctx.command_buffer,
+                ctx.image_index as usize,
+                overlay_buffer,
+                width,
+                height,
             )
-        }?;
-
-        if suboptimal {
-            debug!("Swapchain is suboptimal, triggering recreation");
-            self.recreate_swapchain()?;
-            return Ok(());
-        }
-
-        unsafe {
-            self.device.reset_fences(&[fence])?;
-        }
-
-        self.record_rgba_command_buffer(
-            self.command_buffers[frame_idx],
-            image_index as usize,
-            overlay_buffer,
-            width,
-            height,
-        )?;
-
-        let wait_semaphores = [self.image_available_semaphores[frame_idx]];
-        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
-        let signal_semaphores = [self.render_finished_semaphores[frame_idx]];
-        let submit_info = vk::SubmitInfo::builder()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&[self.command_buffers[frame_idx]])
-            .signal_semaphores(&signal_semaphores)
-            .build();
-
-        unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fence)?;
-        }
-
-        let present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(&signal_semaphores)
-            .swapchains(slice::from_ref(&self.swapchain))
-            .image_indices(slice::from_ref(&image_index))
-            .build();
-
-        let present_result = unsafe {
-            self.swapchain_loader
-                .queue_present(self.present_queue, &present_info)
-        };
-
-        match present_result {
-            Ok(suboptimal) if suboptimal => {
-                debug!("Swapchain present reported suboptimal; recreating");
-                self.recreate_swapchain()?;
-            }
-            Ok(_) => {}
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                self.recreate_swapchain()?;
-            }
-            Err(err) => return Err(anyhow!("Failed to present swapchain image: {err:?}")),
-        }
-
-        self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
-        Ok(())
+        })
     }
 
     fn stage_overlay_pixels(
@@ -466,23 +405,70 @@ impl VulkanRenderer {
     }
 
     fn draw_frame(&mut self) -> Result<()> {
-        let fences = &self.in_flight_fences;
-        let idx = self.current_frame;
-        let fence_handle = fences[idx];
+        self.with_swapchain_frame(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            |renderer, ctx| {
+                let mut use_overlay = false;
+                match renderer
+                    .libplacebo
+                    .render_test_quad(renderer.swapchain_extent)
+                {
+                    Ok(Some(pixels)) => {
+                        if let Err(err) = renderer.stage_overlay_pixels(
+                            ctx.frame_idx,
+                            &pixels,
+                            renderer.swapchain_extent.width,
+                            renderer.swapchain_extent.height,
+                        ) {
+                            warn!("Failed to stage libplacebo quad: {err:?}");
+                        } else {
+                            use_overlay = true;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => warn!("libplacebo test quad failed: {err:?}"),
+                }
 
+                if use_overlay {
+                    let overlay_buffer = &renderer.overlay_buffers[ctx.frame_idx];
+                    renderer.record_rgba_command_buffer(
+                        ctx.command_buffer,
+                        ctx.image_index as usize,
+                        overlay_buffer,
+                        renderer.swapchain_extent.width,
+                        renderer.swapchain_extent.height,
+                    )
+                } else {
+                    renderer.record_command_buffer(ctx.command_buffer, ctx.image_index as usize)
+                }
+            },
+        )
+    }
+
+    pub(crate) fn with_swapchain_frame<F>(
+        &mut self,
+        wait_stage: vk::PipelineStageFlags,
+        record: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut Self, &FrameContext) -> Result<()>,
+    {
+        let frame_idx = self.current_frame;
+        let fence = self.in_flight_fences[frame_idx];
         unsafe {
             self.device.wait_for_fences(
-                &[fence_handle],
+                &[fence],
                 true,
                 Duration::from_secs(1).as_nanos() as u64,
             )?;
         }
 
+        let image_available = self.image_available_semaphores[frame_idx];
         let (image_index, suboptimal) = unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
                 Duration::from_millis(500).as_nanos() as u64,
-                self.image_available_semaphores[idx],
+                image_available,
                 vk::Fence::null(),
             )
         }?;
@@ -493,59 +479,39 @@ impl VulkanRenderer {
             return Ok(());
         }
 
-        let mut use_overlay = false;
-        match self.libplacebo.render_test_quad(self.swapchain_extent) {
-            Ok(Some(pixels)) => {
-                if let Err(err) = self.stage_overlay_pixels(
-                    idx,
-                    &pixels,
-                    self.swapchain_extent.width,
-                    self.swapchain_extent.height,
-                ) {
-                    warn!("Failed to stage libplacebo quad: {err:?}");
-                } else {
-                    use_overlay = true;
-                }
-            }
-            Ok(None) => {}
-            Err(err) => warn!("libplacebo test quad failed: {err:?}"),
-        }
-
         unsafe {
-            self.device.reset_fences(&[fence_handle])?;
+            self.device.reset_fences(&[fence])?;
         }
 
-        if use_overlay {
-            let overlay_buffer = &self.overlay_buffers[idx];
-            self.record_rgba_command_buffer(
-                self.command_buffers[idx],
-                image_index as usize,
-                overlay_buffer,
-                self.swapchain_extent.width,
-                self.swapchain_extent.height,
-            )?;
-        } else {
-            self.record_command_buffer(self.command_buffers[idx], image_index as usize)?;
-        }
+        let context = FrameContext {
+            frame_idx,
+            image_index,
+            command_buffer: self.command_buffers[frame_idx],
+            framebuffer: self.framebuffers[image_index as usize],
+            extent: self.swapchain_extent,
+        };
 
-        let wait_semaphores = [self.image_available_semaphores[idx]];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.render_finished_semaphores[idx]];
+        record(self, &context)?;
+
+        let wait_semaphores = [image_available];
+        let wait_stages = [wait_stage];
+        let signal_semaphores = [self.render_finished_semaphores[frame_idx]];
+        let command_buffers = [context.command_buffer];
 
         let submit_info = vk::SubmitInfo::builder()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&[self.command_buffers[idx]])
+            .command_buffers(&command_buffers)
             .signal_semaphores(&signal_semaphores)
             .build();
 
         unsafe {
             self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fence_handle)?;
+                .queue_submit(self.graphics_queue, &[submit_info], fence)?;
         }
 
         let swapchains = [self.swapchain];
-        let image_indices = [image_index];
+        let image_indices = [context.image_index];
         let present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(&signal_semaphores)
             .swapchains(&swapchains)
@@ -762,6 +728,38 @@ impl VulkanRenderer {
         self.reallocate_overlay_buffers(required_overlay_size)?;
 
         Ok(())
+    }
+
+    pub(crate) fn device(&self) -> &ash::Device {
+        &self.device
+    }
+
+    pub(crate) fn instance(&self) -> &ash::Instance {
+        &self.instance
+    }
+
+    pub(crate) fn physical_device(&self) -> vk::PhysicalDevice {
+        self.physical_device
+    }
+
+    pub(crate) fn graphics_queue(&self) -> vk::Queue {
+        self.graphics_queue
+    }
+
+    pub(crate) fn graphics_queue_family_index(&self) -> u32 {
+        self.graphics_queue_family_index
+    }
+
+    pub(crate) fn render_pass_handle(&self) -> vk::RenderPass {
+        self.render_pass
+    }
+
+    pub(crate) fn swapchain_extent(&self) -> vk::Extent2D {
+        self.swapchain_extent
+    }
+
+    pub(crate) fn swapchain_format(&self) -> vk::Format {
+        self.swapchain_format
     }
 
     fn cleanup_swapchain(&mut self) {

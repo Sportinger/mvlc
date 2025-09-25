@@ -79,6 +79,7 @@ Scope: Linux-first desktop video player & compositor with Figma‑like Canvas
 * wgpu Offscreen‑Pfad zeichnet egui in persistente Texture + Readback‑Buffer, Upload in Vulkan Swapchain.
 * `UiBackend` Enum kapselt wgpu‑Bridge und reserviert Slot für Vulkan‑native Variante.
 * Ziel: libplacebo übernimmt Swapchain‑Overlay, Vulkan‑Backend fällt dann nahtlos ein.
+* Vulkan-native egui-Kommandos stehen hinter `MVLC_VULKAN_UI_NATIVE`, wgpu-CPU-Bridge bleibt Fallback.
 
 ### M2 — HW‑Decode + Zero‑Copy (4–6 Wochen)
 

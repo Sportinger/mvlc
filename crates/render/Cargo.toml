@@ -32,3 +32,4 @@ pollster.workspace = true
 [build-dependencies]
 bindgen.workspace = true
 cc = "1.0"
+shaderc = "0.8"

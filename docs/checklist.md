@@ -45,7 +45,7 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 * [x] Offscreen-egui Renderpfad (wgpu → RGBA Readback)
 * [x] Vulkan-Overlay kopiert RGBA Frames in Swapchain
 * [x] Persistente wgpu-Targets (Texture + Readback) statt Reallokation je Frame
-* [ ] GPU-Only Pfad (libplacebo/Zero-Copy) vorbereitet
+* [x] GPU-Only Pfad (libplacebo/Zero-Copy) vorbereitet (Vulkan-native UI via `MVLC_VULKAN_UI_NATIVE`)
 
 ---
 
