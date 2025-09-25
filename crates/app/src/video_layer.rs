@@ -10,10 +10,7 @@ pub(crate) struct VideoLayerState {
 
 impl VideoLayerState {
     pub fn new(decoder: VideoDecoder) -> Self {
-        Self {
-            decoder,
-            gpu: None,
-        }
+        Self { decoder, gpu: None }
     }
 
     pub fn update_with_latest_frame(
@@ -117,7 +114,8 @@ impl VideoLayerState {
             });
 
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let texture_id = renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear);
+            let texture_id =
+                renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear);
 
             self.gpu = Some(GpuResources {
                 texture,

@@ -10,12 +10,14 @@ use crate::app_state::AppState;
 use crate::media::handle_dropped_file;
 use crate::ui::show_ui;
 use anyhow::anyhow;
+use egui::{ClippedPrimitive, Context as EguiContext, FullOutput};
 use egui_wgpu::{Renderer as EguiWgpuRenderer, ScreenDescriptor};
+use egui_winit::State as EguiWinitState;
 use mvlc_media::{check_dmabuf_support, check_vaapi_support, init as init_gstreamer};
-use mvlc_render::Renderer;
+use mvlc_render::{Renderer, VulkanUiBridge};
 use std::sync::Arc;
 use winit::{
-    event::{Event, WindowEvent},
+    event::{Event, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
@@ -202,6 +204,9 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::info!("Window close requested, exiting");
                         elwt.exit();
                     }
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        handle_zoom_input(&mut app_state, delta);
+                    }
                     WindowEvent::Resized(size) => {
                         graphics_state.resize(size);
                         window.request_redraw();
@@ -232,8 +237,8 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                             show_ui(ctx, &mut app_state);
                         });
 
-                        egui_winit
-                            .handle_platform_output(window.as_ref(), full_output.platform_output);
+                        let platform_output = full_output.platform_output.clone();
+                        egui_winit.handle_platform_output(window.as_ref(), platform_output);
 
                         let screen_descriptor = graphics_state.screen_descriptor();
                         let paint_jobs = egui_winit
@@ -372,36 +377,95 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = Renderer::new_vulkan(window.as_ref())?;
     renderer.init()?;
 
+    let mut egui_ctx = EguiContext::default();
+    let mut egui_winit = EguiWinitState::new(
+        egui_ctx.clone(),
+        egui::ViewportId::default(),
+        window.as_ref(),
+        None,
+        None,
+    );
+    let mut ui_bridge = VulkanUiBridge::new()?;
+
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
 
         match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    tracing::info!("Window close requested, exiting");
-                    elwt.exit();
+            Event::WindowEvent { event, .. } => {
+                let response = egui_winit.on_window_event(window.as_ref(), &event);
+                if response.consumed {
+                    return;
                 }
-                WindowEvent::Resized(size) => {
-                    if let Err(err) = renderer.resize(size.width, size.height) {
-                        tracing::warn!("Failed to resize Vulkan renderer: {err:?}");
+
+                match event {
+                    WindowEvent::CloseRequested => {
+                        tracing::info!("Window close requested, exiting");
+                        elwt.exit();
                     }
-                    window.request_redraw();
-                }
-                WindowEvent::ScaleFactorChanged { .. } => {
-                    window.request_redraw();
-                }
-                WindowEvent::DroppedFile(path) => {
-                    handle_dropped_file(&mut app_state, &path);
-                }
-                WindowEvent::RedrawRequested => {
-                    app_state.poll_video_frames_headless();
-                    if let Err(err) = renderer.render_frame() {
-                        tracing::error!("Vulkan render failed: {err:?}");
+                    WindowEvent::Resized(size) => {
+                        if let Some(vulkan) = renderer.as_vulkan() {
+                            if let Err(err) = vulkan.resize(size.width, size.height) {
+                                tracing::warn!("Failed to resize Vulkan renderer: {err:?}");
+                            }
+                        }
+                        window.request_redraw();
                     }
-                    window.request_redraw();
+                    WindowEvent::ScaleFactorChanged { .. } => {
+                        window.request_redraw();
+                    }
+                    WindowEvent::DroppedFile(path) => {
+                        handle_dropped_file(&mut app_state, &path);
+                    }
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        handle_zoom_input(&mut app_state, delta);
+                    }
+                    WindowEvent::RedrawRequested => {
+                        let raw_input = egui_winit.take_egui_input(window.as_ref());
+                        let full_output: FullOutput = egui_ctx.run(raw_input, |ctx| {
+                            show_ui(ctx, &mut app_state);
+                        });
+
+                        let platform_output = full_output.platform_output.clone();
+                        egui_winit.handle_platform_output(window.as_ref(), platform_output);
+
+                        let size = window.inner_size();
+                        let screen_descriptor = ScreenDescriptor {
+                            size_in_pixels: [size.width.max(1), size.height.max(1)],
+                            pixels_per_point: window.scale_factor() as f32,
+                        };
+
+                        let paint_jobs: Vec<ClippedPrimitive> = egui_ctx
+                            .tessellate(full_output.shapes.clone(), full_output.pixels_per_point);
+
+                        app_state.poll_video_frames_headless();
+
+                        if let Some(vulkan) = renderer.as_vulkan() {
+                            match ui_bridge.render(&full_output, &paint_jobs, &screen_descriptor) {
+                                Ok(Some(frame)) => {
+                                    if let Err(err) = vulkan.render_rgba_frame(
+                                        &frame.pixels,
+                                        frame.width,
+                                        frame.height,
+                                    ) {
+                                        tracing::error!("Vulkan render failed: {err:?}");
+                                    }
+                                }
+                                Ok(None) => {
+                                    if let Err(err) = vulkan.render_frame() {
+                                        tracing::error!("Vulkan render failed: {err:?}");
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::error!("Failed to render UI off-screen: {err:?}");
+                                }
+                            }
+                        }
+
+                        window.request_redraw();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Event::AboutToWait => {
                 window.request_redraw();
             }
@@ -410,4 +474,20 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     Ok(())
+}
+
+fn handle_zoom_input(app_state: &mut AppState, delta: MouseScrollDelta) {
+    let scroll = match delta {
+        MouseScrollDelta::LineDelta(_, y) => y,
+        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 100.0,
+    };
+
+    if scroll.abs() < f32::EPSILON {
+        return;
+    }
+
+    let factor = (1.0 + scroll * 0.1).clamp(0.5, 1.5);
+    if (factor - 1.0).abs() > 0.001 {
+        app_state.canvas_viewport.zoom_by(factor);
+    }
 }

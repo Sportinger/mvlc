@@ -220,12 +220,7 @@ pub fn show_ui(ctx: &egui::Context, app_state: &mut AppState) {
             let canvas_rect = canvas_response.rect;
             painter.rect_filled(canvas_rect, 0.0, egui::Color32::BLACK);
 
-            let layers: Vec<Layer> = app_state
-                .project
-                .layers
-                .render_order()
-                .cloned()
-                .collect();
+            let layers: Vec<Layer> = app_state.project.layers.render_order().cloned().collect();
 
             for layer in layers {
                 if !layer.visible {

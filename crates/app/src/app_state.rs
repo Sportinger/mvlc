@@ -6,10 +6,10 @@ use crate::badges::{BadgeState, RuntimeBadge};
 use crate::canvas::{CanvasInteraction, CanvasViewport};
 use crate::transport::TransportState;
 use crate::video_layer::VideoLayerState;
+use egui_wgpu::Renderer as EguiWgpuRenderer;
 use mvlc_core::{AvSyncManager, LayerId, PerformanceMonitor, Project, StreamId};
 use mvlc_media::{AudioMasterClock, AudioOutput};
 use mvlc_render::{ColorPipeline, Renderer};
-use egui_wgpu::Renderer as EguiWgpuRenderer;
 
 pub struct AppState {
     pub project: Project,

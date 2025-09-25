@@ -64,6 +64,12 @@ impl CanvasViewport {
         let screen_pos = self.canvas_to_screen(canvas_pos, canvas_rect);
         canvas_rect.contains(egui::pos2(screen_pos[0], screen_pos[1]))
     }
+
+    /// Adjust zoom by a multiplicative factor, clamping to sane bounds.
+    pub fn zoom_by(&mut self, factor: f32) {
+        let new_zoom = (self.zoom * factor).clamp(0.1, 10.0);
+        self.zoom = new_zoom;
+    }
 }
 
 impl CanvasInteraction {

@@ -10,6 +10,10 @@ description.workspace = true
 [lib]
 name = "mvlc_render"
 
+[features]
+default = []
+libplacebo = []
+
 [dependencies]
 mvlc-core.workspace = true
 anyhow.workspace = true
@@ -23,10 +27,8 @@ raw-window-handle = "0.5"
 wgpu.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
-
-# Color management and processing (optional)
-# libplacebo = "0.7"
-# libplacebo-sys = "0.7"
+pollster.workspace = true
 
 [build-dependencies]
 bindgen.workspace = true
+cc = "1.0"

@@ -74,6 +74,12 @@ Scope: Linux-first desktop video player & compositor with Figma‑like Canvas
 * Runtime‑Badges live verdrahtet; Detail‑Panel V1.
 * Testmatrix: H.264 1080p/4K, MP4/MKV.
 
+### P2 — UI Bridge (laufend)
+
+* wgpu Offscreen‑Pfad zeichnet egui in persistente Texture + Readback‑Buffer, Upload in Vulkan Swapchain.
+* `UiBackend` Enum kapselt wgpu‑Bridge und reserviert Slot für Vulkan‑native Variante.
+* Ziel: libplacebo übernimmt Swapchain‑Overlay, Vulkan‑Backend fällt dann nahtlos ein.
+
 ### M2 — HW‑Decode + Zero‑Copy (4–6 Wochen)
 
 * VA‑API Dekoder, Negotiation `video/x-raw(memory:DMABuf)`.

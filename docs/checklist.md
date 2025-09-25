@@ -18,8 +18,8 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 * [x] `winit`/`egui` Fenster + Eventloop
 * [x] egui UI über wgpu Swapchain rendern (Fallback zum echten Vulkanpfad)
 * [x] Vulkan Swapchain init (preview path behind `MVLC_VULKAN_SWAPCHAIN`)
-* [ ] libplacebo minimal binden und Test‑Quad rendern
-* [ ] GStreamer via `gstreamer-rs` verlinken
+* [x] libplacebo minimal binden und Test‑Quad rendern
+* [x] GStreamer via `gstreamer-rs` verlinken
 * [x] Single‑Stream SW‑Decode → CPU→GPU Upload → Anzeige
 * [x] Toolbar mit statischen Badges
 * [ ] Basis‑Tracing: Frame begin/end
@@ -28,9 +28,9 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ## M1 — Baseline Player
 
-* [x] Audio‑Ausgabe (`cpal`) + Resample
-* [x] Audio‑Masterclock implementiert
-* [x] A/V‑Sync (Drop/Repeat Window)
+* [x] Audio-Ausgabe (`cpal`) + Resample
+* [x] Audio-Masterclock implementiert
+* [x] A/V-Sync (Drop/Repeat Window)
 * [x] Play/Pause/Seek + Timeline‑Scrub
 * [x] Canvas: Translate/Scale, Z‑Order
 * [x] Drag‑&‑Drop (`DroppedFile`)
@@ -40,10 +40,27 @@ Nutzen: Abhaken während der Umsetzung. Spiegelt Roadmap‑Milestones und Kernau
 
 ---
 
-## M2 — HW‑Decode + Zero‑Copy
+## Phase 2 — UI Bridge
+
+* [x] Offscreen-egui Renderpfad (wgpu → RGBA Readback)
+* [x] Vulkan-Overlay kopiert RGBA Frames in Swapchain
+* [x] Persistente wgpu-Targets (Texture + Readback) statt Reallokation je Frame
+* [ ] GPU-Only Pfad (libplacebo/Zero-Copy) vorbereitet
+
+---
+
+## Phase 3 — libplacebo Test Quad
+
+* [x] Feature-Flag + libplacebo Bootstrap (Context/GPU)
+* [ ] Test-Quad via libplacebo in Vulkan Swapchain zeichnen
+* [ ] Render/Color Badges auf libplacebo-Pfad heben
+
+---
+
+## M2 — HW-Decode + Zero-Copy
 
 * [x] Basic Renderer (Placeholder)
-* [x] VA‑API Decoder in Pipeline
+* [x] VA-API Decoder in Pipeline
 * [x] Negotiation `video/x-raw(memory:DMABuf)`
 * [x] DMABUF‑Import in Vulkan (External Memory)
 * [x] Zero‑Copy Pfaderkennung + UI‑Farbcodes

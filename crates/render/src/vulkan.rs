@@ -4,19 +4,18 @@
 //! cleared frames to the window swapchain. It establishes the groundwork for
 //! integrating libplacebo and zero-copy interop in later milestones.
 
-use anyhow::{anyhow, Result};
+use crate::LibplaceboBridge;
+use anyhow::{anyhow, Context, Result};
 use ash::{vk, Entry};
 use ash_window::enumerate_required_extensions;
 use raw_window_handle::{
-    HasRawDisplayHandle,
-    HasRawWindowHandle,
-    RawDisplayHandle,
-    RawWindowHandle,
+    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
 use std::ffi::CString;
 use std::os::raw::c_char;
+use std::slice;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use winit::window::Window;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -47,7 +46,59 @@ pub struct VulkanRenderer {
     in_flight_fences: Vec<vk::Fence>,
     current_frame: usize,
     window_size: vk::Extent2D,
+    overlay_buffers: Vec<OverlayBuffer>,
+    libplacebo: LibplaceboBridge,
     initialized: bool,
+}
+
+struct OverlayBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    capacity: vk::DeviceSize,
+}
+
+impl OverlayBuffer {
+    fn destroy(&mut self, device: &ash::Device) {
+        unsafe {
+            if self.buffer != vk::Buffer::null() {
+                device.destroy_buffer(self.buffer, None);
+            }
+            if self.memory != vk::DeviceMemory::null() {
+                device.free_memory(self.memory, None);
+            }
+        }
+
+        self.buffer = vk::Buffer::null();
+        self.memory = vk::DeviceMemory::null();
+        self.capacity = 0;
+    }
+
+    fn write(&self, device: &ash::Device, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let write_size = data.len() as vk::DeviceSize;
+        if write_size > self.capacity {
+            return Err(anyhow!(
+                "Overlay data size {} exceeds buffer capacity {}",
+                write_size,
+                self.capacity
+            ));
+        }
+
+        unsafe {
+            let mapped_ptr = device
+                .map_memory(self.memory, 0, write_size, vk::MemoryMapFlags::empty())
+                .with_context(|| "Failed to map overlay buffer memory")?;
+
+            let mapped_slice = slice::from_raw_parts_mut(mapped_ptr as *mut u8, data.len());
+            mapped_slice.copy_from_slice(data);
+            device.unmap_memory(self.memory);
+        }
+
+        Ok(())
+    }
 }
 
 impl VulkanRenderer {
@@ -79,6 +130,14 @@ impl VulkanRenderer {
         let graphics_queue = unsafe { device.get_device_queue(graphics_family, 0) };
         let present_queue = unsafe { device.get_device_queue(present_family, 0) };
 
+        let libplacebo = LibplaceboBridge::new(
+            &instance,
+            physical_device,
+            &device,
+            graphics_family,
+            graphics_queue,
+        )?;
+
         let swapchain_loader = ash::extensions::khr::Swapchain::new(&instance, &device);
 
         let window_size = vk::Extent2D {
@@ -98,14 +157,31 @@ impl VulkanRenderer {
                 window_size,
             )?;
 
-        let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_format)?;
+        let swapchain_image_views =
+            Self::create_image_views(&device, &swapchain_images, swapchain_format)?;
         let render_pass = Self::create_render_pass(&device, swapchain_format)?;
-        let framebuffers = Self::create_framebuffers(&device, &swapchain_image_views, render_pass, swapchain_extent)?;
+        let framebuffers = Self::create_framebuffers(
+            &device,
+            &swapchain_image_views,
+            render_pass,
+            swapchain_extent,
+        )?;
         let command_pool = Self::create_command_pool(&device, graphics_family)?;
-        let command_buffers = Self::allocate_command_buffers(&device, command_pool, framebuffers.len() as u32)?;
+        let command_buffers =
+            Self::allocate_command_buffers(&device, command_pool, framebuffers.len() as u32)?;
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(&device)?;
+
+        let required_overlay_size = (swapchain_extent.width as vk::DeviceSize)
+            * (swapchain_extent.height as vk::DeviceSize)
+            * 4;
+        let overlay_buffers = Self::allocate_overlay_buffers(
+            &instance,
+            physical_device,
+            &device,
+            required_overlay_size,
+        )?;
 
         Ok(Self {
             entry,
@@ -133,6 +209,8 @@ impl VulkanRenderer {
             in_flight_fences,
             current_frame: 0,
             window_size,
+            overlay_buffers,
+            libplacebo,
             initialized: true,
         })
     }
@@ -151,6 +229,11 @@ impl VulkanRenderer {
         Ok(0)
     }
 
+    pub fn render_rgba_frame(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<u64> {
+        self.draw_rgba_frame(rgba, width, height)?;
+        Ok(0)
+    }
+
     pub fn resize(&mut self, new_width: u32, new_height: u32) -> Result<()> {
         let width = new_width.max(1);
         let height = new_height.max(1);
@@ -159,23 +242,61 @@ impl VulkanRenderer {
         Ok(())
     }
 
-    fn draw_frame(&mut self) -> Result<()> {
-        let fences = &self.in_flight_fences;
-        let idx = self.current_frame;
+    fn reallocate_overlay_buffers(&mut self, required_size: vk::DeviceSize) -> Result<()> {
+        let mem_props = unsafe {
+            self.instance
+                .get_physical_device_memory_properties(self.physical_device)
+        };
 
+        if self.overlay_buffers.len() != MAX_FRAMES_IN_FLIGHT {
+            self.overlay_buffers = Self::allocate_overlay_buffers(
+                &self.instance,
+                self.physical_device,
+                &self.device,
+                required_size,
+            )?;
+            return Ok(());
+        }
+
+        for buffer in &mut self.overlay_buffers {
+            if buffer.capacity < required_size {
+                buffer.destroy(&self.device);
+                *buffer = Self::create_overlay_buffer(&self.device, &mem_props, required_size)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn draw_rgba_frame(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<()> {
+        if width == 0 || height == 0 || rgba.is_empty() {
+            return self.draw_frame();
+        }
+
+        if self.swapchain_extent.width != width || self.swapchain_extent.height != height {
+            self.resize(width, height)?;
+        }
+
+        let frame_idx = self.current_frame;
+        self.stage_overlay_pixels(frame_idx, rgba, width, height)?;
+        let overlay_buffer = &self.overlay_buffers[frame_idx];
+
+        let fence = self.in_flight_fences[frame_idx];
         unsafe {
-            self.device
-                .wait_for_fences(&[fences[idx]], true, Duration::from_secs(1).as_nanos() as u64)?;
+            self.device.wait_for_fences(
+                &[fence],
+                true,
+                Duration::from_secs(1).as_nanos() as u64,
+            )?;
         }
 
         let (image_index, suboptimal) = unsafe {
-            self.swapchain_loader
-                .acquire_next_image(
-                    self.swapchain,
-                    Duration::from_millis(500).as_nanos() as u64,
-                    self.image_available_semaphores[idx],
-                    vk::Fence::null(),
-                )
+            self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                Duration::from_millis(500).as_nanos() as u64,
+                self.image_available_semaphores[frame_idx],
+                vk::Fence::null(),
+            )
         }?;
 
         if suboptimal {
@@ -185,10 +306,227 @@ impl VulkanRenderer {
         }
 
         unsafe {
-            self.device.reset_fences(&[fences[idx]])?;
+            self.device.reset_fences(&[fence])?;
         }
 
-        self.record_command_buffer(self.command_buffers[idx], image_index as usize)?;
+        self.record_rgba_command_buffer(
+            self.command_buffers[frame_idx],
+            image_index as usize,
+            overlay_buffer,
+            width,
+            height,
+        )?;
+
+        let wait_semaphores = [self.image_available_semaphores[frame_idx]];
+        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+        let signal_semaphores = [self.render_finished_semaphores[frame_idx]];
+        let submit_info = vk::SubmitInfo::builder()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&[self.command_buffers[frame_idx]])
+            .signal_semaphores(&signal_semaphores)
+            .build();
+
+        unsafe {
+            self.device
+                .queue_submit(self.graphics_queue, &[submit_info], fence)?;
+        }
+
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(slice::from_ref(&self.swapchain))
+            .image_indices(slice::from_ref(&image_index))
+            .build();
+
+        let present_result = unsafe {
+            self.swapchain_loader
+                .queue_present(self.present_queue, &present_info)
+        };
+
+        match present_result {
+            Ok(suboptimal) if suboptimal => {
+                debug!("Swapchain present reported suboptimal; recreating");
+                self.recreate_swapchain()?;
+            }
+            Ok(_) => {}
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                self.recreate_swapchain()?;
+            }
+            Err(err) => return Err(anyhow!("Failed to present swapchain image: {err:?}")),
+        }
+
+        self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+        Ok(())
+    }
+
+    fn stage_overlay_pixels(
+        &mut self,
+        frame_idx: usize,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or_else(|| anyhow!("RGBA dimensions overflow: {width}x{height}"))?;
+
+        if rgba.len() != expected_len {
+            return Err(anyhow!(
+                "RGBA data length {} does not match expected {} for {width}x{height}",
+                rgba.len(),
+                expected_len
+            ));
+        }
+
+        let required_size = expected_len as vk::DeviceSize;
+        self.reallocate_overlay_buffers(required_size)?;
+
+        let overlay_buffer = &mut self.overlay_buffers[frame_idx];
+        overlay_buffer.write(&self.device, rgba)?;
+        Ok(())
+    }
+
+    fn allocate_overlay_buffers(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        device: &ash::Device,
+        required_size: vk::DeviceSize,
+    ) -> Result<Vec<OverlayBuffer>> {
+        let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
+        let mut buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            buffers.push(Self::create_overlay_buffer(
+                device,
+                &mem_props,
+                required_size,
+            )?);
+        }
+
+        Ok(buffers)
+    }
+
+    fn create_overlay_buffer(
+        device: &ash::Device,
+        mem_props: &vk::PhysicalDeviceMemoryProperties,
+        required_size: vk::DeviceSize,
+    ) -> Result<OverlayBuffer> {
+        let buffer_info = vk::BufferCreateInfo::builder()
+            .size(required_size)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .build();
+
+        let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory_type_index = Self::find_memory_type(
+            mem_props,
+            requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .ok_or_else(|| anyhow!("Failed to find suitable memory type for overlay buffer"))?;
+
+        let allocation_size = requirements.size.max(required_size);
+
+        let allocate_info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(allocation_size)
+            .memory_type_index(memory_type_index)
+            .build();
+
+        let memory = unsafe { device.allocate_memory(&allocate_info, None)? };
+        unsafe {
+            device.bind_buffer_memory(buffer, memory, 0)?;
+        }
+
+        Ok(OverlayBuffer {
+            buffer,
+            memory,
+            capacity: allocation_size,
+        })
+    }
+
+    fn find_memory_type(
+        mem_props: &vk::PhysicalDeviceMemoryProperties,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> Option<u32> {
+        for index in 0..mem_props.memory_type_count {
+            let type_matches = (type_filter & (1 << index)) != 0;
+            let has_properties = mem_props.memory_types[index as usize]
+                .property_flags
+                .contains(properties);
+
+            if type_matches && has_properties {
+                return Some(index);
+            }
+        }
+
+        None
+    }
+
+    fn draw_frame(&mut self) -> Result<()> {
+        let fences = &self.in_flight_fences;
+        let idx = self.current_frame;
+        let fence_handle = fences[idx];
+
+        unsafe {
+            self.device.wait_for_fences(
+                &[fence_handle],
+                true,
+                Duration::from_secs(1).as_nanos() as u64,
+            )?;
+        }
+
+        let (image_index, suboptimal) = unsafe {
+            self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                Duration::from_millis(500).as_nanos() as u64,
+                self.image_available_semaphores[idx],
+                vk::Fence::null(),
+            )
+        }?;
+
+        if suboptimal {
+            debug!("Swapchain is suboptimal, triggering recreation");
+            self.recreate_swapchain()?;
+            return Ok(());
+        }
+
+        let mut use_overlay = false;
+        match self.libplacebo.render_test_quad(self.swapchain_extent) {
+            Ok(Some(pixels)) => {
+                if let Err(err) = self.stage_overlay_pixels(
+                    idx,
+                    &pixels,
+                    self.swapchain_extent.width,
+                    self.swapchain_extent.height,
+                ) {
+                    warn!("Failed to stage libplacebo quad: {err:?}");
+                } else {
+                    use_overlay = true;
+                }
+            }
+            Ok(None) => {}
+            Err(err) => warn!("libplacebo test quad failed: {err:?}"),
+        }
+
+        unsafe {
+            self.device.reset_fences(&[fence_handle])?;
+        }
+
+        if use_overlay {
+            let overlay_buffer = &self.overlay_buffers[idx];
+            self.record_rgba_command_buffer(
+                self.command_buffers[idx],
+                image_index as usize,
+                overlay_buffer,
+                self.swapchain_extent.width,
+                self.swapchain_extent.height,
+            )?;
+        } else {
+            self.record_command_buffer(self.command_buffers[idx], image_index as usize)?;
+        }
 
         let wait_semaphores = [self.image_available_semaphores[idx]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -203,7 +541,7 @@ impl VulkanRenderer {
 
         unsafe {
             self.device
-                .queue_submit(self.graphics_queue, &[submit_info], fences[idx])?;
+                .queue_submit(self.graphics_queue, &[submit_info], fence_handle)?;
         }
 
         let swapchains = [self.swapchain];
@@ -240,9 +578,12 @@ impl VulkanRenderer {
         command_buffer: vk::CommandBuffer,
         image_index: usize,
     ) -> Result<()> {
-        let begin_info = vk::CommandBufferBeginInfo::builder().build();
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .build();
         unsafe {
-            self.device.begin_command_buffer(command_buffer, &begin_info)?;
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)?;
         }
 
         let clear_color = vk::ClearValue {
@@ -276,6 +617,110 @@ impl VulkanRenderer {
         Ok(())
     }
 
+    fn record_rgba_command_buffer(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+        overlay_buffer: &OverlayBuffer,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .build();
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)?;
+        }
+
+        let image = self.swapchain_images[image_index];
+        let subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        let to_transfer = vk::ImageMemoryBarrier::builder()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(subresource_range)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .build();
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                slice::from_ref(&to_transfer),
+            );
+        }
+
+        let region = vk::BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            image_extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        };
+
+        unsafe {
+            self.device.cmd_copy_buffer_to_image(
+                command_buffer,
+                overlay_buffer.buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                slice::from_ref(&region),
+            );
+        }
+
+        let to_present = vk::ImageMemoryBarrier::builder()
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(subresource_range)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+            .build();
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                slice::from_ref(&to_present),
+            );
+
+            self.device.end_command_buffer(command_buffer)?;
+        }
+
+        Ok(())
+    }
+
     fn recreate_swapchain(&mut self) -> Result<()> {
         unsafe { self.device.device_wait_idle()? };
 
@@ -296,7 +741,8 @@ impl VulkanRenderer {
         self.swapchain_images = images;
         self.swapchain_format = format;
         self.swapchain_extent = extent;
-        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_format)?;
+        self.swapchain_image_views =
+            Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_format)?;
         self.render_pass = Self::create_render_pass(&self.device, self.swapchain_format)?;
         self.framebuffers = Self::create_framebuffers(
             &self.device,
@@ -310,6 +756,11 @@ impl VulkanRenderer {
             self.framebuffers.len() as u32,
         )?;
 
+        let required_overlay_size = (self.swapchain_extent.width as vk::DeviceSize)
+            * (self.swapchain_extent.height as vk::DeviceSize)
+            * 4;
+        self.reallocate_overlay_buffers(required_overlay_size)?;
+
         Ok(())
     }
 
@@ -322,7 +773,8 @@ impl VulkanRenderer {
                 self.device.destroy_image_view(*image_view, None);
             }
             self.device.destroy_render_pass(self.render_pass, None);
-            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
         }
     }
 
@@ -340,10 +792,8 @@ impl VulkanRenderer {
 
         let required_extensions = enumerate_required_extensions(raw_display)
             .map_err(|e| anyhow!("Unable to enumerate required extensions: {e}"))?;
-        let extension_ptrs: Vec<*const c_char> = required_extensions
-            .iter()
-            .map(|&ext| ext)
-            .collect();
+        let extension_ptrs: Vec<*const c_char> =
+            required_extensions.iter().map(|&ext| ext).collect();
 
         let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&app_info)
@@ -519,17 +969,22 @@ impl VulkanRenderer {
         Ok((swapchain, images, surface_format.format, extent))
     }
 
-    fn choose_swap_extent(capabilities: vk::SurfaceCapabilitiesKHR, window_size: vk::Extent2D) -> vk::Extent2D {
+    fn choose_swap_extent(
+        capabilities: vk::SurfaceCapabilitiesKHR,
+        window_size: vk::Extent2D,
+    ) -> vk::Extent2D {
         if capabilities.current_extent.width != u32::MAX {
             capabilities.current_extent
         } else {
             vk::Extent2D {
-                width: window_size
-                    .width
-                    .clamp(capabilities.min_image_extent.width, capabilities.max_image_extent.width),
-                height: window_size
-                    .height
-                    .clamp(capabilities.min_image_extent.height, capabilities.max_image_extent.height),
+                width: window_size.width.clamp(
+                    capabilities.min_image_extent.width,
+                    capabilities.max_image_extent.width,
+                ),
+                height: window_size.height.clamp(
+                    capabilities.min_image_extent.height,
+                    capabilities.max_image_extent.height,
+                ),
             }
         }
     }
@@ -681,6 +1136,10 @@ impl Drop for VulkanRenderer {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().ok();
+
+            for buffer in &mut self.overlay_buffers {
+                buffer.destroy(&self.device);
+            }
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.device
