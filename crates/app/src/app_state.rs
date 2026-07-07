@@ -198,6 +198,40 @@ impl AppState {
         self.layers_pending_fit.insert(layer_id);
     }
 
+    pub fn tile_loaded_layers(&mut self) {
+        let layer_ids: Vec<LayerId> = self
+            .project
+            .layers
+            .layers()
+            .iter()
+            .filter(|layer| layer.media_path.is_some())
+            .map(|layer| layer.id)
+            .collect();
+
+        if layer_ids.len() < 2 {
+            return;
+        }
+
+        self.layers_pending_fit.clear();
+
+        let cols = (layer_ids.len() as f32).sqrt().ceil() as usize;
+        let rows = layer_ids.len().div_ceil(cols);
+        let cell_w = 460.0;
+        let cell_h = 270.0;
+
+        for (index, layer_id) in layer_ids.into_iter().enumerate() {
+            let col = index % cols;
+            let row = index / cols;
+            let x = (col as f32 - (cols as f32 - 1.0) * 0.5) * cell_w;
+            let y = (row as f32 - (rows as f32 - 1.0) * 0.5) * cell_h;
+
+            if let Some(layer) = self.project.layers.get_layer_mut(layer_id) {
+                layer.set_position(x, y);
+                layer.set_scale(0.65, 0.65);
+            }
+        }
+    }
+
     pub fn play_all(&mut self) {
         let mut started_any = false;
 

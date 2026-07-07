@@ -13,9 +13,14 @@ use anyhow::anyhow;
 use egui::{ClippedPrimitive, Context as EguiContext, FullOutput};
 use egui_wgpu::{Renderer as EguiWgpuRenderer, ScreenDescriptor};
 use egui_winit::State as EguiWinitState;
-use mvlc_media::{check_dmabuf_support, check_vaapi_support, init as init_gstreamer};
+use mvlc_media::{check_dmabuf_support, check_vaapi_support, init as init_media};
 use mvlc_render::{Renderer, VulkanUiBridge};
-use std::{env, sync::Arc};
+use std::{
+    env,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use winit::{
     event::{Event, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -29,6 +34,80 @@ struct GraphicsState {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     egui_renderer: EguiWgpuRenderer,
+}
+
+struct RuntimeDebug {
+    enabled: bool,
+    start: Instant,
+    last: Instant,
+    frames: u64,
+    slow_frames: u64,
+    worst_frame_ms: f64,
+    exit_after: Option<Duration>,
+}
+
+impl RuntimeDebug {
+    fn new(has_startup_files: bool) -> Self {
+        let exit_after = env::var("MVLC_EXIT_AFTER_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        let enabled = has_startup_files || env_flag("MVLC_DEBUG") || exit_after.is_some();
+
+        Self {
+            enabled,
+            start: Instant::now(),
+            last: Instant::now(),
+            frames: 0,
+            slow_frames: 0,
+            worst_frame_ms: 0.0,
+            exit_after,
+        }
+    }
+
+    fn after_frame(&mut self, frame_started: Instant, app_state: &AppState) {
+        if !self.enabled {
+            return;
+        }
+
+        let frame_ms = frame_started.elapsed().as_secs_f64() * 1000.0;
+        self.frames += 1;
+        if frame_ms > 16.7 {
+            self.slow_frames += 1;
+        }
+        self.worst_frame_ms = self.worst_frame_ms.max(frame_ms);
+
+        let elapsed = self.last.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            return;
+        }
+
+        let perf = app_state.performance_monitor.global_summary();
+        tracing::info!(
+            target: "mvlc_debug",
+            "ui_fps={:.1} worst_frame_ms={:.1} slow_frames={} layers={} videos={} playing={} decoded_frames={} decode_fps={:.1} upload={}",
+            self.frames as f64 / elapsed.as_secs_f64(),
+            self.worst_frame_ms,
+            self.slow_frames,
+            app_state.project.layers.layers().len(),
+            app_state.video_layers.len(),
+            app_state.transport.is_playing,
+            perf.total_frames_processed,
+            perf.avg_fps,
+            perf.format_upload_bytes()
+        );
+
+        self.last = Instant::now();
+        self.frames = 0;
+        self.slow_frames = 0;
+        self.worst_frame_ms = 0.0;
+    }
+
+    fn should_exit(&self) -> bool {
+        self.exit_after
+            .map(|duration| self.start.elapsed() >= duration)
+            .unwrap_or(false)
+    }
 }
 
 impl GraphicsState {
@@ -151,13 +230,25 @@ fn vulkan_preview_enabled() -> bool {
     }
 }
 
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn startup_files() -> Vec<PathBuf> {
+    env::args_os().skip(1).map(PathBuf::from).collect()
+}
+
 fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+    let startup_files = startup_files();
+    let mut runtime_debug = RuntimeDebug::new(!startup_files.is_empty());
 
-    if let Err(e) = init_gstreamer() {
-        tracing::warn!("Failed to initialize GStreamer: {}", e);
+    if let Err(e) = init_media() {
+        tracing::warn!("Failed to initialize media backend: {}", e);
     } else {
-        tracing::info!("GStreamer initialized successfully");
+        tracing::info!("Media backend initialized successfully");
         tracing::info!(
             "VA-API hardware decoding available: {}",
             check_vaapi_support()
@@ -190,6 +281,15 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     let initial_size = window.inner_size();
     app_state.canvas_viewport.size = [initial_size.width as f32, initial_size.height as f32];
     let mut graphics_state = pollster::block_on(GraphicsState::new(window.clone()))?;
+
+    for path in &startup_files {
+        if path.exists() {
+            handle_dropped_file(&mut app_state, path);
+        } else {
+            tracing::error!("Startup media file does not exist: {}", path.display());
+        }
+    }
+    app_state.tile_loaded_layers();
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
@@ -231,6 +331,8 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                         handle_dropped_file(&mut app_state, &path);
                     }
                     WindowEvent::RedrawRequested => {
+                        let frame_started = Instant::now();
+
                         app_state.poll_video_frames(
                             &graphics_state.device,
                             &graphics_state.queue,
@@ -336,6 +438,12 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                             graphics_state.egui_renderer.free_texture(id);
                         }
 
+                        runtime_debug.after_frame(frame_started, &app_state);
+                        if runtime_debug.should_exit() {
+                            tracing::info!("MVLC_EXIT_AFTER_SECS reached, exiting");
+                            elwt.exit();
+                        }
+
                         window.request_redraw();
                     }
                     _ => {}
@@ -354,10 +462,10 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
 fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    if let Err(e) = init_gstreamer() {
-        tracing::warn!("Failed to initialize GStreamer: {}", e);
+    if let Err(e) = init_media() {
+        tracing::warn!("Failed to initialize media backend: {}", e);
     } else {
-        tracing::info!("GStreamer initialized successfully");
+        tracing::info!("Media backend initialized successfully");
         tracing::info!(
             "VA-API hardware decoding available: {}",
             check_vaapi_support()

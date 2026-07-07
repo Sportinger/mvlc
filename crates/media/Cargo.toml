@@ -15,7 +15,4 @@ mvlc-core.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-gstreamer.workspace = true
-gstreamer-video.workspace = true
-gstreamer-app.workspace = true
 cpal.workspace = true
